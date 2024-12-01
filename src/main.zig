@@ -18,7 +18,7 @@ const OVERSAMPLE_Y = 2;
 const FIRST_CHAR = ' ';
 const CHAR_COUNT = '~' - ' '; // number of ascii characters in the atlas
 const BITMAP_SIZE = 1024;
-const FONT_SIZE = 20.0;
+const FONT_SIZE = 30.0;
 
 const MAX_LETTERS = 10000; // maximum characters that can be displayed at one time.
 
@@ -166,6 +166,7 @@ export fn init() void {
         .usage = .DYNAMIC,
     });
 
+    std.debug.print("appWidth:{d}, appHeight:{d}\n", .{ sapp.widthf(), sapp.heightf() });
     update_buffers();
 }
 
@@ -178,12 +179,12 @@ fn update_buffers() void {
     state.index_buffer.clearRetainingCapacity();
 
     const pad_x: f32 = 4;
-    const pad_y: f32 = 2;
+    const pad_y: f32 = 20;
     const BOX_HEIGHT: f32 = state.ascent - state.descent + (2 * pad_y); // descent is negative.
-    const BOX_WIDTH: f32 = 200;
+    const BOX_WIDTH: f32 = 400;
 
     const INIT_X: f32 = pad_x;
-    const INIT_Y: f32 = FONT_SIZE; // TODO: Adjust anchor so that position(0,0) is visible.
+    const INIT_Y: f32 = BOX_HEIGHT - state.ascent; // TODO: Adjust anchor so that position(0,0) is visible.
 
     var start_x: f32 = INIT_X;
     var start_y: f32 = INIT_Y;
@@ -577,6 +578,7 @@ pub fn main() !void {
         .window_title = "sokol-zig + Dear Imgui",
         .width = 800,
         .height = 600,
+        .high_dpi = true,
         .icon = .{ .sokol_default = true },
         .logger = .{ .func = slog.func },
     });
