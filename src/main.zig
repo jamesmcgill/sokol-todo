@@ -8,28 +8,34 @@ const sglue = sokol.glue;
 
 const mat4 = @import("math.zig").Mat4;
 const shd_txt = @import("shaders/text.glsl.zig");
-// const shd_solid = @import("shaders/solid.glsl.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
+const OVERSAMPLE_X = 2;
+const OVERSAMPLE_Y = 2;
+const FIRST_CHAR = ' ';
+const BITMAP_SIZE = 1024;
+const FONT_SIZE = 50.0;
+const CHAR_COUNT = '~' - ' ';
+
 const state = struct {
     var pip: sg.Pipeline = .{};
-    var pip_bg: sg.Pipeline = .{};
     var bind: sg.Bindings = .{};
-    var bind_bg: sg.Bindings = .{};
     var pass_action: sg.PassAction = .{};
 
     var vert_buffer: ArrayList(Vertex) = undefined;
     var index_buffer: ArrayList(u16) = undefined;
     var num_text_elems: usize = 0;
     var xPos: f32 = 0.0;
+    var char_info: [CHAR_COUNT]stb_tt.stbtt_packedchar = undefined;
 };
 
 // TODO: could be single Vec4 with 2D coords + UV (x,y,u,v).
 // z can be inferred as 0.0. color can be a uniform.
 const Vertex = extern struct { x: f32, y: f32, z: f32, color: u32, u: f32, v: f32 };
 
+//--------------------------------------------------------------------------------------------------
 fn ortho(left: f32, right: f32, bottom: f32, top: f32, znear: f32, zfar: f32) mat4 {
     const l = left;
     const r = right;
@@ -49,6 +55,7 @@ fn ortho(left: f32, right: f32, bottom: f32, top: f32, znear: f32, zfar: f32) ma
     };
 }
 
+//--------------------------------------------------------------------------------------------------
 fn identity() mat4 {
     return mat4{
         // zig fmt: off
@@ -62,30 +69,17 @@ fn identity() mat4 {
     };
 }
 
+//--------------------------------------------------------------------------------------------------
 export fn init() void {
     sg.setup(.{
         .environment = sglue.environment(),
         .logger = .{ .func = slog.func },
     });
-    state.pass_action.colors[0].load_action = .DONTCARE;
-    state.pass_action.depth.load_action = .DONTCARE;
-    state.pass_action.stencil.load_action = .DONTCARE;
 
-    // Font texture
+    // Font atlas texture for ascii characters
     {
-        const OVERSAMPLE_X = 2;
-        const OVERSAMPLE_Y = 2;
-        const FONT_SIZE = 50.0;
-        const FIRST_CHAR = ' ';
-        const CHAR_COUNT = '~' - ' ';
-        const BITMAP_SIZE = 1024;
-
         var ttf_buffer = [_]u8{0} ** (1 << 20);
         var atlas_bitmap = [_]u8{0} ** (BITMAP_SIZE * BITMAP_SIZE);
-        var white_bitmap = [_]u8{0} ** 1;
-        white_bitmap[0] = 0xff;
-        //var cdata: [96]stb_tt.stbtt_bakedchar = undefined;
-        var charInfo: [CHAR_COUNT]stb_tt.stbtt_packedchar = undefined;
 
         const ttf_file = std.fs.cwd().openFile("c:/windows/fonts/times.ttf", .{}) catch |err| {
             std.debug.print("unable to open file: {}\n", .{err});
@@ -94,7 +88,6 @@ export fn init() void {
         defer ttf_file.close();
         _ = ttf_file.readAll(&ttf_buffer) catch unreachable;
 
-        // NEW code
         var context: stb_tt.stbtt_pack_context = undefined;
         if (stb_tt.stbtt_PackBegin(&context, &atlas_bitmap, BITMAP_SIZE, BITMAP_SIZE, 0, 1, null) == 0) {
             std.debug.print("Failed to initialize font\n", .{});
@@ -102,15 +95,20 @@ export fn init() void {
         }
 
         stb_tt.stbtt_PackSetOversampling(&context, OVERSAMPLE_X, OVERSAMPLE_Y);
-        if (stb_tt.stbtt_PackFontRange(&context, &ttf_buffer, 0, FONT_SIZE, FIRST_CHAR, CHAR_COUNT, &charInfo) == 0) {
+        if (stb_tt.stbtt_PackFontRange(&context, &ttf_buffer, 0, FONT_SIZE, FIRST_CHAR, CHAR_COUNT, &state.char_info) == 0) {
             std.debug.print("Failed to pack font\n", .{});
             return;
         }
 
         stb_tt.stbtt_PackEnd(&context);
 
-        // OLD CODE
-        // _ = stb_tt.stbtt_BakeFontBitmap(&ttf_buffer, 0, 64.0, &atlas_bitmap, BITMAP_SIZE, BITMAP_SIZE, 32, 96, &cdata); // no guarantee this fits!
+        // To avoid having 2 pipelines we need to re-use the same shader.
+        // As the text shader requires a texture for the alpha-channel, we set the alpha
+        // to 1.0 by passing a 1 pixel texture.
+        // Also, to avoid having 2 bindings we need to re-use the same image.
+        // This is achieved by stuffing some additional (alpha pixels) into the texture atlas
+        // at the bottom-right and using those pixels for the background with uv (1.0,1.0).
+        atlas_bitmap[atlas_bitmap.len - 1] = 0xff; // Full alpha.
 
         var img_desc: sg.ImageDesc = .{
             .width = BITMAP_SIZE,
@@ -118,95 +116,15 @@ export fn init() void {
             .pixel_format = .R8,
         };
         img_desc.data.subimage[0][0] = sg.asRange(&atlas_bitmap);
-
-        var bg_img_desc: sg.ImageDesc = .{
-            .width = 1,
-            .height = 1,
-            .pixel_format = .R8,
-        };
-        bg_img_desc.data.subimage[0][0] = sg.asRange(&white_bitmap);
-
         state.bind.images[shd_txt.IMG_tex] = sg.makeImage(img_desc);
         state.bind.samplers[shd_txt.SMP_smp] = sg.makeSampler(.{
             .min_filter = .LINEAR,
             .mag_filter = .LINEAR,
+            .wrap_u = .CLAMP_TO_EDGE,
+            .wrap_v = .CLAMP_TO_EDGE,
         });
-        state.bind_bg.images[shd_txt.IMG_tex] = sg.makeImage(bg_img_desc);
-        state.bind_bg.samplers[shd_txt.SMP_smp] = sg.makeSampler(.{});
-
-        // Print String
-        const my_string = "Hello, World!";
-        const start_x: f32 = 100.0;
-        const start_y: f32 = FONT_SIZE;
-        var x = start_x;
-        var y = start_y;
-        var max_x = x;
-        var min_y = y;
-        var index_base: u16 = 0;
-
-        // zig fmt: off
-         for (my_string) |char| {
-        //const char: u8 = 'W';
-            var q: stb_tt.stbtt_aligned_quad = .{};
-            //stb_tt.stbtt_GetBakedQuad(&cdata, BITMAP_SIZE, BITMAP_SIZE, char-32, &x, &y, &q, 1);//1=opengl & d3d10+,0=d3d9
-            stb_tt.stbtt_GetPackedQuad(&charInfo, BITMAP_SIZE, BITMAP_SIZE, char-FIRST_CHAR, &x, &y, &q, 1);//1=opengl & d3d10+,0=d3d9
-            max_x = q.x1;
-            min_y = q.y0;
-
-            // TODO: color could be a Uniform passed to the shader
-            // bottom-left
-            // bottom-right
-            // top-right
-            // top-left
-            const text_col = 0xff000000;
-            state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = text_col, .u = q.s0, .v = q.t1 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = text_col, .u = q.s1, .v = q.t1 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = text_col, .u = q.s1, .v = q.t0 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = text_col, .u = q.s0, .v = q.t0 }) catch unreachable;
-
-            state.index_buffer.append(index_base + 0) catch unreachable;
-            state.index_buffer.append(index_base + 1) catch unreachable;
-            state.index_buffer.append(index_base + 2) catch unreachable;
-            state.index_buffer.append(index_base + 0) catch unreachable;
-            state.index_buffer.append(index_base + 2) catch unreachable;
-            state.index_buffer.append(index_base + 3) catch unreachable;
-            index_base += 4;
-        }
-        state.num_text_elems = state.index_buffer.items.len;
-
-        // Backing box
-        const box_col = 0xffffe3cc;
-        //const box_col = 0xff0000ff;
-        const pad: f32 = 10;
-        state.vert_buffer.append(.{ .x = start_x-pad, .y = start_y+pad, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = max_x+pad,   .y = start_y+pad, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = max_x+pad,   .y = min_y-pad,   .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = start_x-pad, .y = min_y-pad,   .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-
-        state.index_buffer.append(index_base + 0) catch unreachable;
-        state.index_buffer.append(index_base + 1) catch unreachable;
-        state.index_buffer.append(index_base + 2) catch unreachable;
-        state.index_buffer.append(index_base + 0) catch unreachable;
-        state.index_buffer.append(index_base + 2) catch unreachable;
-        state.index_buffer.append(index_base + 3) catch unreachable;
-        index_base += 4;
-
-        state.bind.vertex_buffers[0] = sg.makeBuffer(.{
-            .data = sg.asRange(state.vert_buffer.items),
-        });
-
-        state.bind.index_buffer = sg.makeBuffer(.{
-            .type = .INDEXBUFFER,
-            .data = sg.asRange(state.index_buffer.items),
-        });
-
-        state.bind_bg.vertex_buffers[0] = state.bind.vertex_buffers[0];
-        state.bind_bg.index_buffer = state.bind.index_buffer;
-
-    // zig fmt: on
     }
 
-    // create a shader and pipeline object
     var pip_desc: sg.PipelineDesc = .{
         .shader = sg.makeShader(shd_txt.textShaderDesc(sg.queryBackend())),
         .index_type = .UINT16,
@@ -215,10 +133,7 @@ export fn init() void {
     pip_desc.layout.attrs[shd_txt.ATTR_text_color0].format = .UBYTE4N;
     pip_desc.layout.attrs[shd_txt.ATTR_text_texcoord0].format = .FLOAT2;
 
-    // BG pipeline - Without blending
-    state.pip_bg = sg.makePipeline(pip_desc);
-
-    // Text pipeline - With blending
+    // Add alpha blending. Only needed for text as it's shape is in the alpha channel.
     pip_desc.colors[0].blend = .{
         .enabled = true,
         .src_factor_rgb = sg.BlendFactor.SRC_ALPHA,
@@ -226,50 +141,120 @@ export fn init() void {
     };
     state.pip = sg.makePipeline(pip_desc);
 
-    // initial clear color
     state.pass_action.colors[0] = .{
         .load_action = .CLEAR,
-        //.clear_value = .{ .r = 0.8, .g = 0.89, .b = 1.0, .a = 1.0 },
         .clear_value = .{ .r = 0.2, .g = 0.2, .b = 0.2, .a = 1.0 },
     };
 
-    if (sg.sg_query_backend() == sg.Backend.GLCORE) {
-        std.debug.print("USING GL backend\n", .{});
-    } else if (sg.sg_query_backend() == sg.Backend.D3D11) {
-        std.debug.print("USING Dx11 backend\n", .{});
-    }
+    const MAX_LETTERS = 10000;
+    state.bind.vertex_buffers[0] = sg.makeBuffer(.{
+        .size = @sizeOf(Vertex) * 4 * MAX_LETTERS,
+        .usage = .DYNAMIC,
+    });
 
-    const pf_info = sg.sg_query_pixelformat(sglue.swapchain().color_format);
-    if (pf_info.blend) {
-        std.debug.print("SWAP BLENDING SUPPORTED\n", .{});
-    } else {
-        std.debug.print("SWAP BLENDING IS NOT SUPPORTED\n", .{});
-    }
+    state.bind.index_buffer = sg.makeBuffer(.{
+        .size = @sizeOf(u16) * 6 * MAX_LETTERS,
+        .type = .INDEXBUFFER,
+        .usage = .DYNAMIC,
+    });
 }
 
+//--------------------------------------------------------------------------------------------------
+// TODO: update buffer only when data changes
+// TODO: as these buffers are DYNAMIC and not STREAM, they should not be updated every single frame
+//--------------------------------------------------------------------------------------------------
+fn update_buffers() void {
+    const start_x: f32 = 100.0;
+    const start_y: f32 = FONT_SIZE;
+    const my_string = "Hello, World!";
+    var x = start_x;
+    var y = start_y;
+    var max_x = x;
+    var min_y = y;
+    var index_base: u16 = 0;
+    state.vert_buffer.clearRetainingCapacity();
+    state.index_buffer.clearRetainingCapacity();
+
+    // zig fmt: off
+     for (my_string) |char| {
+        var q: stb_tt.stbtt_aligned_quad = .{};
+        stb_tt.stbtt_GetPackedQuad(&state.char_info, BITMAP_SIZE, BITMAP_SIZE, char-FIRST_CHAR, &x, &y, &q, 1);//1=opengl & d3d10+,0=d3d9
+        max_x = q.x1;
+        min_y = q.y0;
+
+        // TODO: color could be a Uniform passed to the shader
+        const text_col = 0xff000000;
+
+        // bottom-left
+        // bottom-right
+        // top-right
+        // top-left
+        state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = text_col, .u = q.s0, .v = q.t1 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = text_col, .u = q.s1, .v = q.t1 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = text_col, .u = q.s1, .v = q.t0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = text_col, .u = q.s0, .v = q.t0 }) catch unreachable;
+
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 1) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 3) catch unreachable;
+        index_base += 4;
+    }
+    state.num_text_elems = state.index_buffer.items.len;
+
+
+    // Backing box - Depends on knowing the final text metrics
+    // so should be attached to text rendering
+    const box_col = 0xffffe3cc;
+    //const box_col = 0xff0000ff;
+    const pad: f32 = 10;
+    state.vert_buffer.append(.{ .x = start_x-pad, .y = start_y+pad, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+    state.vert_buffer.append(.{ .x = max_x+pad,   .y = start_y+pad, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+    state.vert_buffer.append(.{ .x = max_x+pad,   .y = min_y-pad,   .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+    state.vert_buffer.append(.{ .x = start_x-pad, .y = min_y-pad,   .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+
+    state.index_buffer.append(index_base + 0) catch unreachable;
+    state.index_buffer.append(index_base + 1) catch unreachable;
+    state.index_buffer.append(index_base + 2) catch unreachable;
+    state.index_buffer.append(index_base + 0) catch unreachable;
+    state.index_buffer.append(index_base + 2) catch unreachable;
+    state.index_buffer.append(index_base + 3) catch unreachable;
+    index_base += 4;
+    // zig fmt: on
+
+    sg.updateBuffer(state.bind.vertex_buffers[0], sg.asRange(state.vert_buffer.items));
+    sg.updateBuffer(state.bind.index_buffer, sg.asRange(state.index_buffer.items));
+}
+
+//--------------------------------------------------------------------------------------------------
 export fn frame() void {
+    update_buffers();
+
     const proj = ortho(0.0, sapp.widthf(), sapp.heightf(), 0.0, -1.0, 1.0);
     const vs_params = shd_txt.VsParams{ .mvp = proj };
     sg.beginPass(.{ .action = state.pass_action, .swapchain = sglue.swapchain() });
-
-    sg.applyPipeline(state.pip_bg);
-    sg.applyBindings(state.bind_bg);
-    sg.applyUniforms(shd_txt.UB_vs_params, sg.asRange(&vs_params));
-    sg.draw(@intCast(state.num_text_elems), @intCast(state.index_buffer.items.len - state.num_text_elems), 1);
-
     sg.applyPipeline(state.pip);
     sg.applyBindings(state.bind);
     sg.applyUniforms(shd_txt.UB_vs_params, sg.asRange(&vs_params));
+
+    // Draw background box
+    sg.draw(@intCast(state.num_text_elems), @intCast(state.index_buffer.items.len - state.num_text_elems), 1);
+
+    // Draw text
     sg.draw(0, @intCast(state.num_text_elems), 1);
 
     sg.endPass();
     sg.commit();
 }
 
+//--------------------------------------------------------------------------------------------------
 export fn cleanup() void {
     sg.shutdown();
 }
 
+//--------------------------------------------------------------------------------------------------
 export fn event(ev: [*c]const sapp.Event) void {
     _ = ev;
 }

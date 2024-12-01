@@ -421,7 +421,6 @@ fn buildShaders(b: *Build, target: Build.ResolvedTarget) void {
     const shaders_dir = "src/shaders/";
     const shaders = .{
         "text.glsl",
-        "solid.glsl",
     };
     const optional_shdc: ?[:0]const u8 = comptime switch (builtin.os.tag) {
         .windows => "win32/sokol-shdc.exe",
