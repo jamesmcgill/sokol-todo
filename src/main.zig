@@ -18,7 +18,7 @@ const OVERSAMPLE_Y = 2;
 const FIRST_CHAR = ' ';
 const CHAR_COUNT = '~' - ' '; // number of ascii characters in the atlas
 const BITMAP_SIZE = 1024;
-const FONT_SIZE = 50.0;
+const FONT_SIZE = 20.0;
 
 const MAX_LETTERS = 10000; // maximum characters that can be displayed at one time.
 
@@ -180,13 +180,15 @@ fn update_buffers() void {
     const pad_x: f32 = 4;
     const pad_y: f32 = 2;
     const BOX_HEIGHT: f32 = state.ascent - state.descent + (2 * pad_y); // descent is negative.
+    const BOX_WIDTH: f32 = 200;
 
-    const INIT_X: f32 = 100.0;
-    const INIT_Y: f32 = FONT_SIZE;
+    const INIT_X: f32 = pad_x;
+    const INIT_Y: f32 = FONT_SIZE; // TODO: Adjust anchor so that position(0,0) is visible.
 
     var start_x: f32 = INIT_X;
     var start_y: f32 = INIT_Y;
 
+    const heading_bg_colour = 0xff3e3e3e;
     const box_colours = [_]u32{
         0xffffe3cc, // blue
         0xffc2eaff, // orange
@@ -194,13 +196,14 @@ fn update_buffers() void {
         0xffc2ffdb, // green
     };
 
-    var i: usize = 0;
-    for (state.tasks.items) |item| {
-        if (item.depth != 0) {
-            continue;
+    for (state.tasks.items, 0..) |item, i| {
+        // Start new column
+        const is_heading: bool = (item.depth == 0);
+        if (i != 0 and is_heading) {
+            start_x += BOX_WIDTH;
+            start_y = INIT_Y; // Start from top
         }
-        start_y += BOX_HEIGHT;
-        start_x += 5;
+
         var x = start_x;
         var y = start_y;
         var max_x = x;
@@ -215,12 +218,11 @@ fn update_buffers() void {
         {
             const index_base: u16 = @intCast(box_vert_idx);
             //const box_col = 0xffffe3cc;
-            const box_col = box_colours[i % box_colours.len];
-            i += 1;
-            state.vert_buffer.append(.{ .x = start_x-pad_x, .y = start_y-state.descent+pad_y, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = max_x+pad_x,   .y = start_y-state.descent+pad_y, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = max_x+pad_x,   .y = start_y-state.ascent-pad_y,  .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = start_x-pad_x, .y = start_y-state.ascent-pad_y,  .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+            const box_col = if (is_heading) heading_bg_colour else box_colours[i % box_colours.len];
+            state.vert_buffer.append(.{ .x = start_x-pad_x,     .y = start_y-state.descent+pad_y, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = start_x+BOX_WIDTH, .y = start_y-state.descent+pad_y, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = start_x+BOX_WIDTH, .y = start_y-state.ascent-pad_y,  .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = start_x-pad_x,     .y = start_y-state.ascent-pad_y,  .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
 
             state.index_buffer.append(index_base + 0) catch unreachable;
             state.index_buffer.append(index_base + 1) catch unreachable;
@@ -237,7 +239,7 @@ fn update_buffers() void {
             min_y = q.y0;
 
             // TODO: color could be a Uniform passed to the shader
-            const text_col = 0xff000000;
+            const text_col: u32 = if (is_heading) 0xffffffff else 0xff000000;
 
             // bottom-left
             // bottom-right
@@ -259,8 +261,11 @@ fn update_buffers() void {
         // zig fmt: on
 
         // Fix up the backing box size, now that we know the size of the text
-        state.vert_buffer.items[box_vert_idx + 1].x = max_x + pad_x;
-        state.vert_buffer.items[box_vert_idx + 2].x = max_x + pad_x;
+        // state.vert_buffer.items[box_vert_idx + 1].x = max_x + pad_x;
+        // state.vert_buffer.items[box_vert_idx + 2].x = max_x + pad_x;
+
+        start_y += BOX_HEIGHT; // Next row
+
     } // for (state.tasks)
 
     sg.updateBuffer(state.bind.vertex_buffers[0], sg.asRange(state.vert_buffer.items));
@@ -530,7 +535,7 @@ pub fn main() !void {
         }
         std.debug.print("Num Items: {}\n", .{state.tasks.items.len});
         for (state.tasks.items) |item| {
-            if (item.depth != 0) {
+            if (item.depth != 0) { // Root nodes at depth level 0 are the headings
                 continue;
             }
 
