@@ -12,12 +12,15 @@ const shd_txt = @import("shaders/text.glsl.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
+// Font atlas
 const OVERSAMPLE_X = 2;
 const OVERSAMPLE_Y = 2;
 const FIRST_CHAR = ' ';
+const CHAR_COUNT = '~' - ' '; // number of ascii characters in the atlas
 const BITMAP_SIZE = 1024;
 const FONT_SIZE = 50.0;
-const CHAR_COUNT = '~' - ' ';
+
+const MAX_LETTERS = 10000; // maximum characters that can be displayed at one time.
 
 const state = struct {
     var pip: sg.Pipeline = .{};
@@ -26,9 +29,12 @@ const state = struct {
 
     var vert_buffer: ArrayList(Vertex) = undefined;
     var index_buffer: ArrayList(u16) = undefined;
-    var num_text_elems: usize = 0;
-    var xPos: f32 = 0.0;
     var char_info: [CHAR_COUNT]stb_tt.stbtt_packedchar = undefined;
+    var tasks: ArrayList(Task) = undefined;
+
+    var ascent: f32 = 0;
+    var descent: f32 = 0;
+    var line_gap: f32 = 0;
 };
 
 // TODO: could be single Vec4 with 2D coords + UV (x,y,u,v).
@@ -102,6 +108,9 @@ export fn init() void {
 
         stb_tt.stbtt_PackEnd(&context);
 
+        stb_tt.stbtt_GetScaledFontVMetrics(&ttf_buffer, 0, FONT_SIZE, &state.ascent, &state.descent, &state.line_gap);
+
+        std.debug.print("Ascent:{d}, Descent:{d}, Line-Gap:{d}\n", .{ state.ascent, state.descent, state.line_gap });
         // To avoid having 2 pipelines we need to re-use the same shader.
         // As the text shader requires a texture for the alpha-channel, we set the alpha
         // to 1.0 by passing a 1 pixel texture.
@@ -146,7 +155,6 @@ export fn init() void {
         .clear_value = .{ .r = 0.2, .g = 0.2, .b = 0.2, .a = 1.0 },
     };
 
-    const MAX_LETTERS = 10000;
     state.bind.vertex_buffers[0] = sg.makeBuffer(.{
         .size = @sizeOf(Vertex) * 4 * MAX_LETTERS,
         .usage = .DYNAMIC,
@@ -157,72 +165,103 @@ export fn init() void {
         .type = .INDEXBUFFER,
         .usage = .DYNAMIC,
     });
+
+    update_buffers();
 }
 
 //--------------------------------------------------------------------------------------------------
-// TODO: update buffer only when data changes
-// TODO: as these buffers are DYNAMIC and not STREAM, they should not be updated every single frame
+// NOTE: update buffer only when data changes.
+// As these buffers are DYNAMIC and not STREAM, they should not be updated every single frame
 //--------------------------------------------------------------------------------------------------
 fn update_buffers() void {
-    const start_x: f32 = 100.0;
-    const start_y: f32 = FONT_SIZE;
-    const my_string = "Hello, World!";
-    var x = start_x;
-    var y = start_y;
-    var max_x = x;
-    var min_y = y;
-    var index_base: u16 = 0;
     state.vert_buffer.clearRetainingCapacity();
     state.index_buffer.clearRetainingCapacity();
 
-    // zig fmt: off
-     for (my_string) |char| {
-        var q: stb_tt.stbtt_aligned_quad = .{};
-        stb_tt.stbtt_GetPackedQuad(&state.char_info, BITMAP_SIZE, BITMAP_SIZE, char-FIRST_CHAR, &x, &y, &q, 1);//1=opengl & d3d10+,0=d3d9
-        max_x = q.x1;
-        min_y = q.y0;
+    const pad_x: f32 = 4;
+    const pad_y: f32 = 2;
+    const BOX_HEIGHT: f32 = state.ascent - state.descent + (2 * pad_y); // descent is negative.
 
-        // TODO: color could be a Uniform passed to the shader
-        const text_col = 0xff000000;
+    const INIT_X: f32 = 100.0;
+    const INIT_Y: f32 = FONT_SIZE;
 
-        // bottom-left
-        // bottom-right
-        // top-right
-        // top-left
-        state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = text_col, .u = q.s0, .v = q.t1 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = text_col, .u = q.s1, .v = q.t1 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = text_col, .u = q.s1, .v = q.t0 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = text_col, .u = q.s0, .v = q.t0 }) catch unreachable;
+    var start_x: f32 = INIT_X;
+    var start_y: f32 = INIT_Y;
 
-        state.index_buffer.append(index_base + 0) catch unreachable;
-        state.index_buffer.append(index_base + 1) catch unreachable;
-        state.index_buffer.append(index_base + 2) catch unreachable;
-        state.index_buffer.append(index_base + 0) catch unreachable;
-        state.index_buffer.append(index_base + 2) catch unreachable;
-        state.index_buffer.append(index_base + 3) catch unreachable;
-        index_base += 4;
-    }
-    state.num_text_elems = state.index_buffer.items.len;
+    const box_colours = [_]u32{
+        0xffffe3cc, // blue
+        0xffc2eaff, // orange
+        0xffffbded, // lavender
+        0xffc2ffdb, // green
+    };
 
+    var i: usize = 0;
+    for (state.tasks.items) |item| {
+        if (item.depth != 0) {
+            continue;
+        }
+        start_y += BOX_HEIGHT;
+        start_x += 5;
+        var x = start_x;
+        var y = start_y;
+        var max_x = x;
+        var min_y = y;
 
-    // Backing box - Depends on knowing the final text metrics
-    // so should be attached to text rendering
-    const box_col = 0xffffe3cc;
-    //const box_col = 0xff0000ff;
-    const pad: f32 = 10;
-    state.vert_buffer.append(.{ .x = start_x-pad, .y = start_y+pad, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-    state.vert_buffer.append(.{ .x = max_x+pad,   .y = start_y+pad, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-    state.vert_buffer.append(.{ .x = max_x+pad,   .y = min_y-pad,   .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-    state.vert_buffer.append(.{ .x = start_x-pad, .y = min_y-pad,   .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+        // Backing box - Depends on knowing the final text metrics
+        // BUT should be in the buffer BEFORE the text, so it's drawn first.
+        // To resolve this catch-22, we add dummy values first and correct them
+        // when we know the size of the text.
+        // zig fmt: off
+        const box_vert_idx = state.vert_buffer.items.len;
+        {
+            const index_base: u16 = @intCast(box_vert_idx);
+            //const box_col = 0xffffe3cc;
+            const box_col = box_colours[i % box_colours.len];
+            i += 1;
+            state.vert_buffer.append(.{ .x = start_x-pad_x, .y = start_y-state.descent+pad_y, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = max_x+pad_x,   .y = start_y-state.descent+pad_y, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = max_x+pad_x,   .y = start_y-state.ascent-pad_y,  .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = start_x-pad_x, .y = start_y-state.ascent-pad_y,  .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
 
-    state.index_buffer.append(index_base + 0) catch unreachable;
-    state.index_buffer.append(index_base + 1) catch unreachable;
-    state.index_buffer.append(index_base + 2) catch unreachable;
-    state.index_buffer.append(index_base + 0) catch unreachable;
-    state.index_buffer.append(index_base + 2) catch unreachable;
-    state.index_buffer.append(index_base + 3) catch unreachable;
-    index_base += 4;
-    // zig fmt: on
+            state.index_buffer.append(index_base + 0) catch unreachable;
+            state.index_buffer.append(index_base + 1) catch unreachable;
+            state.index_buffer.append(index_base + 2) catch unreachable;
+            state.index_buffer.append(index_base + 0) catch unreachable;
+            state.index_buffer.append(index_base + 2) catch unreachable;
+            state.index_buffer.append(index_base + 3) catch unreachable;
+        }
+
+        for (item.title) |char| {
+            var q: stb_tt.stbtt_aligned_quad = .{};
+            stb_tt.stbtt_GetPackedQuad(&state.char_info, BITMAP_SIZE, BITMAP_SIZE, char-FIRST_CHAR, &x, &y, &q, 1);//1=opengl & d3d10+,0=d3d9
+            max_x = q.x1;
+            min_y = q.y0;
+
+            // TODO: color could be a Uniform passed to the shader
+            const text_col = 0xff000000;
+
+            // bottom-left
+            // bottom-right
+            // top-right
+            // top-left
+            const index_base: u16 = @intCast(state.vert_buffer.items.len);
+            state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = text_col, .u = q.s0, .v = q.t1 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = text_col, .u = q.s1, .v = q.t1 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = text_col, .u = q.s1, .v = q.t0 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = text_col, .u = q.s0, .v = q.t0 }) catch unreachable;
+
+            state.index_buffer.append(index_base + 0) catch unreachable;
+            state.index_buffer.append(index_base + 1) catch unreachable;
+            state.index_buffer.append(index_base + 2) catch unreachable;
+            state.index_buffer.append(index_base + 0) catch unreachable;
+            state.index_buffer.append(index_base + 2) catch unreachable;
+            state.index_buffer.append(index_base + 3) catch unreachable;
+        }
+        // zig fmt: on
+
+        // Fix up the backing box size, now that we know the size of the text
+        state.vert_buffer.items[box_vert_idx + 1].x = max_x + pad_x;
+        state.vert_buffer.items[box_vert_idx + 2].x = max_x + pad_x;
+    } // for (state.tasks)
 
     sg.updateBuffer(state.bind.vertex_buffers[0], sg.asRange(state.vert_buffer.items));
     sg.updateBuffer(state.bind.index_buffer, sg.asRange(state.index_buffer.items));
@@ -230,8 +269,6 @@ fn update_buffers() void {
 
 //--------------------------------------------------------------------------------------------------
 export fn frame() void {
-    update_buffers();
-
     const proj = ortho(0.0, sapp.widthf(), sapp.heightf(), 0.0, -1.0, 1.0);
     const vs_params = shd_txt.VsParams{ .mvp = proj };
     sg.beginPass(.{ .action = state.pass_action, .swapchain = sglue.swapchain() });
@@ -239,11 +276,7 @@ export fn frame() void {
     sg.applyBindings(state.bind);
     sg.applyUniforms(shd_txt.UB_vs_params, sg.asRange(&vs_params));
 
-    // Draw background box
-    sg.draw(@intCast(state.num_text_elems), @intCast(state.index_buffer.items.len - state.num_text_elems), 1);
-
-    // Draw text
-    sg.draw(0, @intCast(state.num_text_elems), 1);
+    sg.draw(0, @intCast(state.index_buffer.items.len), 1);
 
     sg.endPass();
     sg.commit();
@@ -428,8 +461,7 @@ pub fn main() !void {
         var reader = std.io.bufferedReader(file.reader());
         var istream = reader.reader();
 
-        var tasks = try std.ArrayList(Task).initCapacity(allocator, 256);
-        defer tasks.deinit();
+        state.tasks = try ArrayList(Task).initCapacity(allocator, 256);
 
         var current_parent: ?usize = null;
 
@@ -450,25 +482,25 @@ pub fn main() !void {
                     // Open new task
 
                     // Parent/child relationships
-                    const prev_depth = if (tasks.items.len > 0)
-                        tasks.items[tasks.items.len - 1].depth
+                    const prev_depth = if (state.tasks.items.len > 0)
+                        state.tasks.items[state.tasks.items.len - 1].depth
                     else
                         0;
 
                     const indent = col;
                     if (indent > prev_depth) {
                         // Child task
-                        current_parent = tasks.items.len - 1; // Previous task index
+                        current_parent = state.tasks.items.len - 1; // Previous task index
                     } else if (indent < prev_depth) {
                         // Walk back up the tree to find the last parent for tasks at this depth.
-                        current_parent = find_previous_parent_at_depth(tasks, indent);
+                        current_parent = find_previous_parent_at_depth(state.tasks, indent);
                     }
 
                     // Title
                     const rest_of_line = line[col + 1 ..];
                     const title_string = try string_allocator.dupe(u8, rest_of_line);
 
-                    try tasks.append(Task{
+                    try state.tasks.append(Task{
                         .title = title_string,
                         .depth = indent,
                         .parent = current_parent,
@@ -476,14 +508,14 @@ pub fn main() !void {
                     });
                     // Let the parent know they have just given birth
                     if (current_parent) |parent_idx| {
-                        try tasks.items[parent_idx].children.append(tasks.items.len - 1);
+                        try state.tasks.items[parent_idx].children.append(state.tasks.items.len - 1);
                     }
 
                     // std.debug.print("ADDED: len:{d}:{s}\n", .{ title_string.len, title_string });
                     break;
                 } else if (char == '#') {
-                    std.debug.assert(tasks.items.len > 0);
-                    add_meta_data(&tasks.items[tasks.items.len - 1], line[col + 1 ..], string_allocator);
+                    std.debug.assert(state.tasks.items.len > 0);
+                    add_meta_data(&state.tasks.items[state.tasks.items.len - 1], line[col + 1 ..], string_allocator);
                     break;
                 } else if (char == ' ') {
                     continue;
@@ -496,8 +528,8 @@ pub fn main() !void {
             //TODO: (continue grabbing multi-line description)
 
         }
-        std.debug.print("Num Items: {}\n", .{tasks.items.len});
-        for (tasks.items) |item| {
+        std.debug.print("Num Items: {}\n", .{state.tasks.items.len});
+        for (state.tasks.items) |item| {
             if (item.depth != 0) {
                 continue;
             }
@@ -530,11 +562,6 @@ pub fn main() !void {
             //     }
             // }
         }
-
-        // Cleanup allocations
-        for (tasks.items) |item| {
-            item.children.deinit();
-        }
     }
 
     sapp.run(.{
@@ -548,4 +575,11 @@ pub fn main() !void {
         .icon = .{ .sokol_default = true },
         .logger = .{ .func = slog.func },
     });
+
+    // Cleanup allocations
+    for (state.tasks.items) |item| {
+        item.children.deinit();
+    }
+    // TODO: move to state cleanup
+    defer state.tasks.deinit();
 }
