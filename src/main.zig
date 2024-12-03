@@ -87,8 +87,9 @@ export fn init() void {
         var ttf_buffer = [_]u8{0} ** (1 << 20);
         var atlas_bitmap = [_]u8{0} ** (BITMAP_SIZE * BITMAP_SIZE);
 
-        const ttf_file = std.fs.cwd().openFile("c:/windows/fonts/times.ttf", .{}) catch |err| {
-            std.debug.print("unable to open file: {}\n", .{err});
+        const FONT_PATH = "fonts/liberation-fonts-ttf-2.1.5/LiberationSans-Regular.ttf";
+        const ttf_file = std.fs.cwd().openFile(FONT_PATH, .{}) catch |err| {
+            std.debug.print("unable to open font file: {s}:{}\n", .{ FONT_PATH, err });
             return;
         };
         defer ttf_file.close();
@@ -454,8 +455,9 @@ pub fn main() !void {
     state.index_buffer = ArrayList(u16).init(vert_allocator);
 
     {
-        const file = std.fs.cwd().openFile("S:/KanbanReplacementFile.txt", .{}) catch |err| {
-            std.debug.print("unable to open file: {}\n", .{err});
+        const DATA_FILE = "data/data.txt";
+        const file = std.fs.cwd().openFile(DATA_FILE, .{}) catch |err| {
+            std.debug.print("unable to open data file: {s}:{}\n", .{ DATA_FILE, err });
             // const stderr = std.io.getStdErr();
             return;
         };
@@ -575,7 +577,7 @@ pub fn main() !void {
         .frame_cb = frame,
         .cleanup_cb = cleanup,
         .event_cb = event,
-        .window_title = "sokol-zig + Dear Imgui",
+        .window_title = "sokol-todo",
         .width = 800,
         .height = 600,
         .high_dpi = true,

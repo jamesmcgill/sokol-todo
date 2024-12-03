@@ -1,0 +1,119 @@
+-Programming // This task is actually a root-heading
+  -Graphics // This task is actually just a sub-heading
+    #DESC: Finish off all the books and courses
+    -Raytracing in a weekend
+    -CG Time machine videos
+      @Video
+      #DESC: https://www.youtube.com/@cgtimemachine1257/videos
+  -Assembly
+  -Embedded
+    -Udemy Electronics course
+  -KanbanFlow Replacement  // This is just a task, not a sub-heading
+  -Make a Zig debugger in dearIMGUI
+  -Physics in one weekend books
+  -Toolchain of Tomorrow
+    #DESC: https://tomorrowcorporation.com/posts/how-we-make-games-at-tomorrow-corp-our-custom-tools-tech-demo
+
+-Language
+  -Genki Books
+  -Japanese Vocabulary
+    #ACTIVATE_DATE:2024-07-19
+    #DAILY
+    #DESC: Kitsun
+  -Revise German
+
+-Health & Fitness
+  -Take Vitamins
+    #ACTIVATE_DATE:2024-07-19 // This will be the next time to show. If today is 18th then that means we achieved it today.
+    #DAILY
+    #STREAK:4
+    #HIGH_STREAK:21
+
+  -Monday Night Workout
+    #ACTIVATE_DATE:2024-07-19  // Next Monday night
+    #WEEKLY  // Repeat every Monday (day known due to Activate Date)
+    #STREAK:2
+    #HIGH_STREAK:4
+    #TOTAL_HITS:329
+    #TOTAL_MISSES:14   // So achieved 329 out of 343
+
+  -Jogging (long)
+    #ACTIVATE_DATE:2023-01-01
+    #DAILY
+    #DISABLED
+
+  -Jogging (HIIT) + 5BX + Strength
+    #ACTIVATE_DATE:2023-05-01
+    #DAILY
+    #DISABLED
+  -Start going swimming  # This is just an idea for SOMEDAY/MAYBE
+
+-Finance
+  -Fill out Tax Return
+    #ACTIVATE_DATE:2025-05
+    #YEARLY
+
+// Allow goals AND tasks to be shown:
+-Music
+  -Learn Piano
+    -Finish 4 Chapters of Book   // GOAL
+      #ACTIVATE_DATE:2024-7      // Goal will appear in 'July'
+      -Practise with Book        // Daily task will ALSO appear in 'Today'
+      #ACTIVATE_DATE:2024-07-03
+      #DAILY
+
+-Game
+  -Play Lemmings  // InProgress??
+    #ACTIVATE_DATE:2024-7      // Will appear in 'This Month' and linger each month until complete
+    #DISABLED                  // Will now NOT appear, but still tracked that it was started but unfinished.
+
+-Incoming
+
+-Loose Items
+  -Get Fit
+    #ACTIVATE_DATE:2025          // Fuzzy goal will appear when 2025 happens
+  -Change Bed Sheets
+    #ACTIVATE_DATE:2024-08-31
+    #MONTHLY
+  -Phone Ikea
+    #ACTIVATE_DATE:2024-07-31    // Not a due date, more an activation date. Will only first appear in "Today" on that day.
+  -Phone Pyur
+    #ACTIVATE_DATE:2024-07       // Activates in July. Will be in the "This month" task list when it's July
+  -Places to visit in Berlin
+
+
+
+SUMMARY:
+========
+  #ACTIVATE_DATE is used for most things
+
+    #ACTIVATE_DATE:2025          // Appears for the whole of 2025 (carries into next year if not complet)
+    #ACTIVATE_DATE:2024-07       // Appears the whole of July (carries into next month if not complete)
+    #ACTIVATE_DATE:2024-08-31    // Appears in 'Today' list (carries over each day after until complete)
+    #ACTIVATE_WEEK:2024-08-31    // Appears in 'Week' list, 31st MUST be a Monday
+
+Recurrances can be added:
+    #DAILY
+    #WEEKLY
+    #MONTHLY
+    #YEARLY
+    #FOUR_WEEKLY
+    #TWO_WEEKLY
+// Everything is calculated from ACTIVATE_DATE which will be always updated to be the next future occurrence
+
+Recurrances may be paused:
+    #DISABLED
+
+Recurrances MAY have streak info
+
+
+// MISSING
+// Mark Completed // Add Completion date rather than just deleting. Will need ability to cleanup old tasks.
+// Someday/Maybe  // ????? just a low priority?
+// WaitingFor:    // a Tag??   Task needs tracked but nothing possible now due to waiting on something to happen.
+// InProgress:    // Long running tasks: e.g. Reading a book, started but unlikely to finish by date. Make a "this month" task and let it roll on.
+// PRIORITY:      // 1-5: Show urgent things in a seperate list or sort to the top of long lists
+// COMPLEXITY:    // 1-5: Simple 5 min tasks should be easy to show in a seperate list
+// Tags:  @Video, @Book, @Computer, @Phone, @Home, @Office, @LongRunning, @Outdoor
+//    Group things together by mood/location: i.e. Physically active things i.e housework. Outdoor/Shopping things. Things done at computer.
+// 
