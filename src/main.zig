@@ -1,4 +1,5 @@
 const std = @import("std");
+const time = @import("std").time;
 const stb_tt = @import("stb/stb_truetype.zig");
 const sokol = @import("sokol");
 const slog = sokol.log;
@@ -20,7 +21,24 @@ const CHAR_COUNT = '~' - ' '; // number of ascii characters in the atlas
 const BITMAP_SIZE = 1024;
 const FONT_SIZE = 30.0;
 
-const MAX_LETTERS = 10000; // maximum characters that can be displayed at one time.
+const MAX_LETTERS = 10000; // maximum characters that can be displayed at one time (vert buffer).
+
+fn BOX_HEIGHT() f32 {
+    return state.ascent - state.descent + (2 * BOX_PAD_Y); // descent is negative
+}
+const BOX_WIDTH: f32 = 400;
+const BOX_PAD_X: f32 = 4;
+const BOX_PAD_Y: f32 = 20;
+const HEADING_BG_COLOUR = 0xff3e3e3e;
+const HEADING_TXT_COLOUR = 0xffffffff;
+const TXT_COLOUR = 0xff000000;
+
+const BOX_COLOURS = [_]u32{
+    0xffffe3cc, // blue
+    0xffc2eaff, // orange
+    0xffffbded, // lavender
+    0xffc2ffdb, // green
+};
 
 const state = struct {
     var pip: sg.Pipeline = .{};
@@ -35,11 +53,56 @@ const state = struct {
     var ascent: f32 = 0;
     var descent: f32 = 0;
     var line_gap: f32 = 0;
+
+    var bg_color_idx: usize = 0;
 };
 
 // TODO: could be single Vec4 with 2D coords + UV (x,y,u,v).
 // z can be inferred as 0.0. color can be a uniform.
 const Vertex = extern struct { x: f32, y: f32, z: f32, color: u32, u: f32, v: f32 };
+
+const Date = struct { year: u16, month: u8, day_of_month: u8 };
+//--------------------------------------------------------------------------------------------------
+fn print_current_date() void {
+    const date = current_date();
+    std.debug.print("Current Date: {}-{}-{}\n", .{ date.year, date.month, date.day_of_month });
+}
+
+//--------------------------------------------------------------------------------------------------
+fn current_date() Date {
+    // TODO: This is fixed so that the data file doesn't need updated manually for testing.
+    return Date{ .year = 2024, .month = 12, .day_of_month = 4 };
+
+    // const cur_time_secs: u64 = @intCast(time.timestamp());
+    //
+    // const epoch_seconds = time.epoch.EpochSeconds{ .secs = cur_time_secs };
+    // const epoch_day = epoch_seconds.getEpochDay();
+    // const year_day = epoch_day.calculateYearDay();
+    // const month_day = year_day.calculateMonthDay();
+    // return Date{ .year = year_day.year, .month = month_day.month.numeric(), .day_of_month = month_day.day_index + 1 };
+}
+
+//--------------------------------------------------------------------------------------------------
+fn activation_date_passed(task: Task) bool {
+    if (task.active_range == .none) {
+        return false;
+    }
+
+    const date = current_date();
+    if (task.active_year > date.year) return false;
+    if (task.active_month > date.month) return false;
+    if (task.active_day_of_month > date.day_of_month) return false;
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+fn is_active_for_range(task: Task, range: ActivationRange) bool {
+    if (task.active_range != range) {
+        return false;
+    }
+
+    return activation_date_passed(task);
+}
 
 //--------------------------------------------------------------------------------------------------
 fn ortho(left: f32, right: f32, bottom: f32, top: f32, znear: f32, zfar: f32) mat4 {
@@ -172,6 +235,75 @@ export fn init() void {
 }
 
 //--------------------------------------------------------------------------------------------------
+fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, text: []const u8) void {
+    // zig fmt: off
+    //
+    // Backing box
+    {
+        const index_base: u16 = @intCast(state.vert_buffer.items.len);
+        state.vert_buffer.append(.{ .x = task_x-BOX_PAD_X, .y = task_y-state.descent+BOX_PAD_Y, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = task_x+BOX_WIDTH, .y = task_y-state.descent+BOX_PAD_Y, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = task_x+BOX_WIDTH, .y = task_y-state.ascent-BOX_PAD_Y,  .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = task_x-BOX_PAD_X, .y = task_y-state.ascent-BOX_PAD_Y,  .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 1) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 3) catch unreachable;
+    }
+
+    // Text
+    var x = task_x;
+    var y = task_y;
+    for (text) |char| {
+        var q: stb_tt.stbtt_aligned_quad = .{};
+        stb_tt.stbtt_GetPackedQuad(&state.char_info, BITMAP_SIZE, BITMAP_SIZE, char-FIRST_CHAR, &x, &y, &q, 1);//1=opengl & d3d10+,0=d3d9
+
+        // bottom-left
+        // bottom-right
+        // top-right
+        // top-left
+        const index_base: u16 = @intCast(state.vert_buffer.items.len);
+        state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = txt_colour, .u = q.s0, .v = q.t1 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = txt_colour, .u = q.s1, .v = q.t1 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = txt_colour, .u = q.s1, .v = q.t0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = txt_colour, .u = q.s0, .v = q.t0 }) catch unreachable;
+
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 1) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 3) catch unreachable;
+    }
+    // zig fmt: on
+}
+
+//--------------------------------------------------------------------------------------------------
+fn add_custom_column(x: f32, y: f32, heading_txt: []const u8, activation_range: ActivationRange) void {
+    var cur_y = y;
+    add_task_verts(x, cur_y, HEADING_BG_COLOUR, HEADING_TXT_COLOUR, heading_txt);
+
+    cur_y += BOX_HEIGHT(); // Next row
+    for (state.tasks.items) |item| {
+        const is_heading: bool = (item.depth == 0);
+        if (is_heading) { // Skip headers
+            continue;
+        }
+
+        if (is_active_for_range(item, activation_range)) {
+            const box_col = BOX_COLOURS[state.bg_color_idx % BOX_COLOURS.len];
+            state.bg_color_idx = (state.bg_color_idx + 1 % BOX_COLOURS.len);
+
+            add_task_verts(x, cur_y, box_col, TXT_COLOUR, item.title);
+            cur_y += BOX_HEIGHT(); // Next row
+        }
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
 // NOTE: update buffer only when data changes.
 // As these buffers are DYNAMIC and not STREAM, they should not be updated every single frame
 //--------------------------------------------------------------------------------------------------
@@ -179,95 +311,51 @@ fn update_buffers() void {
     state.vert_buffer.clearRetainingCapacity();
     state.index_buffer.clearRetainingCapacity();
 
-    const pad_x: f32 = 4;
-    const pad_y: f32 = 20;
-    const BOX_HEIGHT: f32 = state.ascent - state.descent + (2 * pad_y); // descent is negative.
-    const BOX_WIDTH: f32 = 400;
+    const INIT_X: f32 = BOX_PAD_X;
+    const INIT_Y: f32 = BOX_HEIGHT() - state.ascent; // TODO: Adjust anchor so that position(0,0) is visible?
 
-    const INIT_X: f32 = pad_x;
-    const INIT_Y: f32 = BOX_HEIGHT - state.ascent; // TODO: Adjust anchor so that position(0,0) is visible.
+    var task_x: f32 = INIT_X;
+    var task_y: f32 = INIT_Y;
 
-    var start_x: f32 = INIT_X;
-    var start_y: f32 = INIT_Y;
+    // Recurring and upcoming task (e.g. Daily) columns
+    // Rather than gather this data into new read-only lists, we can simply do repeated passes.
+    // TODO: we need to work out how to edit the orginal data from these visual only copies.
 
-    const heading_bg_colour = 0xff3e3e3e;
-    const box_colours = [_]u32{
-        0xffffe3cc, // blue
-        0xffc2eaff, // orange
-        0xffffbded, // lavender
-        0xffc2ffdb, // green
-    };
+    // TODAY column
+    add_custom_column(task_x, INIT_Y, "Today", ActivationRange.day);
+    task_x += BOX_WIDTH;
 
+    // THIS WEEK column
+    add_custom_column(task_x, INIT_Y, "This Week", ActivationRange.week);
+    task_x += BOX_WIDTH;
+
+    // THIS MONTH column
+    add_custom_column(task_x, INIT_Y, "This Month", ActivationRange.month);
+    task_x += BOX_WIDTH;
+
+    // THIS YEAR column
+    add_custom_column(task_x, INIT_Y, "This Year", ActivationRange.year);
+    task_x += BOX_WIDTH;
+
+    // All the tasks (even dailies) are shown in their columns
     for (state.tasks.items, 0..) |item, i| {
-        // Start new column
         const is_heading: bool = (item.depth == 0);
-        if (i != 0 and is_heading) {
-            start_x += BOX_WIDTH;
-            start_y = INIT_Y; // Start from top
+
+        // Start new column
+        if (is_heading and i != 0) {
+            task_x += BOX_WIDTH;
+            task_y = INIT_Y; // Start from top
         }
 
-        var x = start_x;
-        var y = start_y;
-        var max_x = x;
-        var min_y = y;
-
-        // Backing box - Depends on knowing the final text metrics
-        // BUT should be in the buffer BEFORE the text, so it's drawn first.
-        // To resolve this catch-22, we add dummy values first and correct them
-        // when we know the size of the text.
-        // zig fmt: off
-        const box_vert_idx = state.vert_buffer.items.len;
-        {
-            const index_base: u16 = @intCast(box_vert_idx);
-            //const box_col = 0xffffe3cc;
-            const box_col = if (is_heading) heading_bg_colour else box_colours[i % box_colours.len];
-            state.vert_buffer.append(.{ .x = start_x-pad_x,     .y = start_y-state.descent+pad_y, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = start_x+BOX_WIDTH, .y = start_y-state.descent+pad_y, .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = start_x+BOX_WIDTH, .y = start_y-state.ascent-pad_y,  .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = start_x-pad_x,     .y = start_y-state.ascent-pad_y,  .z = 0.0, .color = box_col, .u = 1.0, .v = 1.0 }) catch unreachable;
-
-            state.index_buffer.append(index_base + 0) catch unreachable;
-            state.index_buffer.append(index_base + 1) catch unreachable;
-            state.index_buffer.append(index_base + 2) catch unreachable;
-            state.index_buffer.append(index_base + 0) catch unreachable;
-            state.index_buffer.append(index_base + 2) catch unreachable;
-            state.index_buffer.append(index_base + 3) catch unreachable;
+        const text_col: u32 = if (is_heading) HEADING_TXT_COLOUR else TXT_COLOUR;
+        const box_col = if (is_heading) HEADING_BG_COLOUR else BOX_COLOURS[state.bg_color_idx % BOX_COLOURS.len];
+        if (!is_heading) {
+            state.bg_color_idx = (state.bg_color_idx + 1 % BOX_COLOURS.len);
         }
 
-        for (item.title) |char| {
-            var q: stb_tt.stbtt_aligned_quad = .{};
-            stb_tt.stbtt_GetPackedQuad(&state.char_info, BITMAP_SIZE, BITMAP_SIZE, char-FIRST_CHAR, &x, &y, &q, 1);//1=opengl & d3d10+,0=d3d9
-            max_x = q.x1;
-            min_y = q.y0;
-
-            // TODO: color could be a Uniform passed to the shader
-            const text_col: u32 = if (is_heading) 0xffffffff else 0xff000000;
-
-            // bottom-left
-            // bottom-right
-            // top-right
-            // top-left
-            const index_base: u16 = @intCast(state.vert_buffer.items.len);
-            state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = text_col, .u = q.s0, .v = q.t1 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = text_col, .u = q.s1, .v = q.t1 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = text_col, .u = q.s1, .v = q.t0 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = text_col, .u = q.s0, .v = q.t0 }) catch unreachable;
-
-            state.index_buffer.append(index_base + 0) catch unreachable;
-            state.index_buffer.append(index_base + 1) catch unreachable;
-            state.index_buffer.append(index_base + 2) catch unreachable;
-            state.index_buffer.append(index_base + 0) catch unreachable;
-            state.index_buffer.append(index_base + 2) catch unreachable;
-            state.index_buffer.append(index_base + 3) catch unreachable;
-        }
-        // zig fmt: on
-
-        // Fix up the backing box size, now that we know the size of the text
-        // state.vert_buffer.items[box_vert_idx + 1].x = max_x + pad_x;
-        // state.vert_buffer.items[box_vert_idx + 2].x = max_x + pad_x;
-
-        start_y += BOX_HEIGHT; // Next row
-
+        add_task_verts(task_x, task_y, box_col, text_col, item.title);
+        task_y += BOX_HEIGHT(); // Next row
+        //
     } // for (state.tasks)
 
     sg.updateBuffer(state.bind.vertex_buffers[0], sg.asRange(state.vert_buffer.items));
@@ -454,6 +542,7 @@ pub fn main() !void {
     state.vert_buffer = ArrayList(Vertex).init(vert_allocator);
     state.index_buffer = ArrayList(u16).init(vert_allocator);
 
+    print_current_date();
     {
         const DATA_FILE = "data/data.txt";
         const file = std.fs.cwd().openFile(DATA_FILE, .{}) catch |err| {
@@ -542,33 +631,33 @@ pub fn main() !void {
                 continue;
             }
 
-            // std.debug.print("{} parent:{} >>{s} {},{},{},{},{}\n", //
-            //     .{
-            //     item.depth,               item.parent orelse 9, //
-            //     item.title,               item.active_range,
-            //     item.active_year,         item.active_month,
-            //     item.active_day_of_month, item.recur,
-            // });
-            // // std.debug.print("   DESC: {s}\n", .{item.description});
-            // for (item.children.items) |child| {
-            //     std.debug.print("  {} parent:{} >>{s} {},{},{},{},{}\n", //
-            //         .{
-            //         tasks.items[child].depth,               tasks.items[child].parent orelse 9, //
-            //         tasks.items[child].title,               tasks.items[child].active_range,
-            //         tasks.items[child].active_year,         tasks.items[child].active_month,
-            //         tasks.items[child].active_day_of_month, tasks.items[child].recur,
-            //     });
+            std.debug.print("{} parent:{} >>{s} {},{},{},{},{}\n", //
+                .{
+                item.depth,               item.parent orelse 9, //
+                item.title,               item.active_range,
+                item.active_year,         item.active_month,
+                item.active_day_of_month, item.recur,
+            });
+            // std.debug.print("   DESC: {s}\n", .{item.description});
+            for (item.children.items) |child| {
+                std.debug.print("  {} parent:{} >>{s} {},{},{},{},{}\n", //
+                    .{
+                    state.tasks.items[child].depth,               state.tasks.items[child].parent orelse 9, //
+                    state.tasks.items[child].title,               state.tasks.items[child].active_range,
+                    state.tasks.items[child].active_year,         state.tasks.items[child].active_month,
+                    state.tasks.items[child].active_day_of_month, state.tasks.items[child].recur,
+                });
 
-            //     for (tasks.items[child].children.items) |child_l| {
-            //         std.debug.print("    {} parent:{} >>{s} {},{},{},{},{}\n", //
-            //             .{
-            //             tasks.items[child_l].depth,               tasks.items[child_l].parent orelse 9, //
-            //             tasks.items[child_l].title,               tasks.items[child_l].active_range,
-            //             tasks.items[child_l].active_year,         tasks.items[child_l].active_month,
-            //             tasks.items[child_l].active_day_of_month, tasks.items[child_l].recur,
-            //         });
-            //     }
-            // }
+                for (state.tasks.items[child].children.items) |child_l| {
+                    std.debug.print("    {} parent:{} >>{s} {},{},{},{},{}\n", //
+                        .{
+                        state.tasks.items[child_l].depth,               state.tasks.items[child_l].parent orelse 9, //
+                        state.tasks.items[child_l].title,               state.tasks.items[child_l].active_range,
+                        state.tasks.items[child_l].active_year,         state.tasks.items[child_l].active_month,
+                        state.tasks.items[child_l].active_day_of_month, state.tasks.items[child_l].recur,
+                    });
+                }
+            }
         }
     }
 
