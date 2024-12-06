@@ -8,6 +8,7 @@
 // Keyboard Task Selection (vim style navigation)
 // Insert task (below/above) (o / O keys like vim)
 // Edit task text (i)
+// Move up/down (shift + j/k like vim)
 //
 // Delete task (D like vim)
 // Paste task (p/P like vim) [handles moving tasks]
@@ -45,9 +46,10 @@ const FONT_SIZE = 30.0;
 
 const MAX_LETTERS = 10000; // maximum characters that can be displayed at one time (vert buffer).
 
-const BOX_WIDTH: f32 = 400;
+const COLUMN_WIDTH: f32 = 400;
 const BOX_PAD_X: f32 = 12;
 const BOX_PAD_Y: f32 = 20;
+const BOX_PAD_Y_SM: f32 = 10;
 const BOX_MARGIN_X: f32 = 4;
 const BOX_MARGIN_Y: f32 = 4;
 const HEADING_BG_COLOUR = 0xff3e3e3e;
@@ -256,15 +258,46 @@ export fn init() void {
 }
 
 //--------------------------------------------------------------------------------------------------
+fn add_text_verts(txt_x: f32, txt_y: f32, colour: u32, text: []const u8) void {
+    var x = txt_x;
+    var y = txt_y;
+    for (text) |char| {
+        var q: stb_tt.stbtt_aligned_quad = .{};
+        stb_tt.stbtt_GetPackedQuad(&state.char_info, BITMAP_SIZE, BITMAP_SIZE, char - FIRST_CHAR, &x, &y, &q, 1); //1=opengl & d3d10+,0=d3d9
+
+        // bottom-left
+        // bottom-right
+        // top-right
+        // top-left
+        const index_base: u16 = @intCast(state.vert_buffer.items.len);
+        state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = colour, .u = q.s0, .v = q.t1 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = colour, .u = q.s1, .v = q.t1 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = colour, .u = q.s1, .v = q.t0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = colour, .u = q.s0, .v = q.t0 }) catch unreachable;
+
+        // zig fmt: off
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 1) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 3) catch unreachable;
+        // zig fmt: on
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
 // task_x and task_y are the top-left coords of the task box
 //--------------------------------------------------------------------------------------------------
 fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, text: []const u8) f32 {
     // Background box
+    // Keep track of bottom points on the bax as we will need to set the y-pos properly later
+    // once we know the proper size of the box.
     const bg_bottom_left_vert_idx = state.vert_buffer.items.len + 0;
     const bg_bottom_right_vert_idx = state.vert_buffer.items.len + 1;
     {
         // zig fmt: off
-        const w = BOX_WIDTH;
+        const w = COLUMN_WIDTH;
         const mx = BOX_MARGIN_X;
         const my = BOX_MARGIN_Y;
         const index_base: u16 = @intCast(state.vert_buffer.items.len);
@@ -283,38 +316,53 @@ fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, tex
     }
 
     // Text
+    const font_height = (state.ascent - state.descent);
+
+    // For multi-line text we use a different padding size
+    // Initially though, we much assume the normal padding.
+    const pad_y_diff = BOX_PAD_Y - BOX_PAD_Y_SM;
+    var pad_y = BOX_PAD_Y;
+
+    var num_lines: f32 = 1;
     {
         // Starting position of the text
-        var x = task_x + BOX_MARGIN_X + BOX_PAD_X;
-        var y = task_y + BOX_MARGIN_Y + BOX_PAD_Y + state.ascent;
-        for (text) |char| {
+        const text_x = task_x + BOX_MARGIN_X + BOX_PAD_X;
+        const text_y = task_y + BOX_MARGIN_Y + pad_y + state.ascent;
+        const text_width_available = COLUMN_WIDTH - (2 * BOX_PAD_X) - (2 * BOX_MARGIN_X);
+        const max_x = text_x + text_width_available;
+
+        var x = text_x;
+        var y = text_y;
+        var from_range_idx: usize = 0;
+        var to_range_idx: usize = 0;
+        for (text, 0..) |char, i| {
+            if (char == ' ') { // store last space character position
+                to_range_idx = i; // NOTE: it's fine if it was the space that went  over the limit.
+            }
             var q: stb_tt.stbtt_aligned_quad = .{};
             stb_tt.stbtt_GetPackedQuad(&state.char_info, BITMAP_SIZE, BITMAP_SIZE, char - FIRST_CHAR, &x, &y, &q, 1); //1=opengl & d3d10+,0=d3d9
+            if (q.x1 > max_x) {
+                // When we detect multi-line text boxes we reduce the y padding slightly
+                if (pad_y == BOX_PAD_Y) {
+                    y -= pad_y_diff;
+                    pad_y = BOX_PAD_Y_SM;
+                }
 
-            // bottom-left
-            // bottom-right
-            // top-right
-            // top-left
-            const index_base: u16 = @intCast(state.vert_buffer.items.len);
-            state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = txt_colour, .u = q.s0, .v = q.t1 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = txt_colour, .u = q.s1, .v = q.t1 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = txt_colour, .u = q.s1, .v = q.t0 }) catch unreachable;
-            state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = txt_colour, .u = q.s0, .v = q.t0 }) catch unreachable;
-
-            // zig fmt: off
-            state.index_buffer.append(index_base + 0) catch unreachable;
-            state.index_buffer.append(index_base + 1) catch unreachable;
-            state.index_buffer.append(index_base + 2) catch unreachable;
-            state.index_buffer.append(index_base + 0) catch unreachable;
-            state.index_buffer.append(index_base + 2) catch unreachable;
-            state.index_buffer.append(index_base + 3) catch unreachable;
-            // zig fmt: on
+                // Add the text up to and including the last space
+                add_text_verts(text_x, y, txt_colour, text[from_range_idx .. to_range_idx + 1]);
+                x = text_x;
+                y += font_height + state.line_gap;
+                from_range_idx = to_range_idx + 1;
+                num_lines += 1;
+            }
         }
+        // Remaining text
+        add_text_verts(text_x, y, txt_colour, text[from_range_idx..text.len]);
     }
 
     // Adjust the backing image height now that we know how much text it needs to hold.
-    const font_height = state.ascent - state.descent; // TODO: Add multi-line support
-    const viz_box_height = font_height + (2 * BOX_PAD_Y);
+    const text_height = (font_height * num_lines) + (state.line_gap * (num_lines - 1));
+    const viz_box_height = text_height + (2 * pad_y);
     {
         // offset by top margin
         const my = BOX_MARGIN_Y;
@@ -368,19 +416,19 @@ fn update_buffers() void {
 
     // TODAY column
     add_custom_column(task_x, INIT_Y, "Today", ActivationRange.day);
-    task_x += BOX_WIDTH;
+    task_x += COLUMN_WIDTH;
 
     // THIS WEEK column
     add_custom_column(task_x, INIT_Y, "This Week", ActivationRange.week);
-    task_x += BOX_WIDTH;
+    task_x += COLUMN_WIDTH;
 
     // THIS MONTH column
     add_custom_column(task_x, INIT_Y, "This Month", ActivationRange.month);
-    task_x += BOX_WIDTH;
+    task_x += COLUMN_WIDTH;
 
     // THIS YEAR column
     add_custom_column(task_x, INIT_Y, "This Year", ActivationRange.year);
-    task_x += BOX_WIDTH;
+    task_x += COLUMN_WIDTH;
 
     // All the tasks (even dailies) are shown in their columns
     for (state.tasks.items, 0..) |item, i| {
@@ -388,7 +436,7 @@ fn update_buffers() void {
 
         // Start new column
         if (is_heading and i != 0) {
-            task_x += BOX_WIDTH;
+            task_x += COLUMN_WIDTH;
             task_y = INIT_Y; // Start from top
         }
 
