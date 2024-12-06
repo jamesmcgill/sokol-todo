@@ -1,3 +1,24 @@
+//--------------------------------------------------------------------------------------------------
+// TODO for MVP
+// 1) Word wrapping
+// 2) Column collapsing (with mouse click)
+// 3) Total task count in heading
+//
+// EDITING (excluding custom columns for now)
+// Keyboard Task Selection (vim style navigation)
+// Insert task (below/above) (o / O keys like vim)
+// Edit task text (i)
+//
+// Delete task (D like vim)
+// Paste task (p/P like vim) [handles moving tasks]
+//
+// Edit Heading Title  (Same as for tasks, whole column can be deleted and pasted)
+//
+// UNDO:
+// Minimal undo-redo system with u and ctrl-r (Capture snapshot of entire textfile buffer is enough)
+//
+//--------------------------------------------------------------------------------------------------
+
 const std = @import("std");
 const time = @import("std").time;
 const stb_tt = @import("stb/stb_truetype.zig");
@@ -9,6 +30,7 @@ const sglue = sokol.glue;
 
 const mat4 = @import("math.zig").Mat4;
 const shd_txt = @import("shaders/text.glsl.zig");
+//--------------------------------------------------------------------------------------------------
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -23,12 +45,11 @@ const FONT_SIZE = 30.0;
 
 const MAX_LETTERS = 10000; // maximum characters that can be displayed at one time (vert buffer).
 
-fn BOX_HEIGHT() f32 {
-    return state.ascent - state.descent + (2 * BOX_PAD_Y); // descent is negative
-}
 const BOX_WIDTH: f32 = 400;
-const BOX_PAD_X: f32 = 4;
+const BOX_PAD_X: f32 = 12;
 const BOX_PAD_Y: f32 = 20;
+const BOX_MARGIN_X: f32 = 4;
+const BOX_MARGIN_Y: f32 = 4;
 const HEADING_BG_COLOUR = 0xff3e3e3e;
 const HEADING_TXT_COLOUR = 0xffffffff;
 const TXT_COLOUR = 0xff000000;
@@ -216,7 +237,7 @@ export fn init() void {
 
     state.pass_action.colors[0] = .{
         .load_action = .CLEAR,
-        .clear_value = .{ .r = 0.2, .g = 0.2, .b = 0.2, .a = 1.0 },
+        .clear_value = .{ .r = 0.3, .g = 0.3, .b = 0.3, .a = 1.0 },
     };
 
     state.bind.vertex_buffers[0] = sg.makeBuffer(.{
@@ -235,16 +256,23 @@ export fn init() void {
 }
 
 //--------------------------------------------------------------------------------------------------
-fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, text: []const u8) void {
-    // zig fmt: off
-    //
-    // Backing box
+// task_x and task_y are the top-left coords of the task box
+//--------------------------------------------------------------------------------------------------
+fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, text: []const u8) f32 {
+    // Background box
+    const bg_bottom_left_vert_idx = state.vert_buffer.items.len + 0;
+    const bg_bottom_right_vert_idx = state.vert_buffer.items.len + 1;
     {
+        // zig fmt: off
+        const w = BOX_WIDTH;
+        const mx = BOX_MARGIN_X;
+        const my = BOX_MARGIN_Y;
         const index_base: u16 = @intCast(state.vert_buffer.items.len);
-        state.vert_buffer.append(.{ .x = task_x-BOX_PAD_X, .y = task_y-state.descent+BOX_PAD_Y, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = task_x+BOX_WIDTH, .y = task_y-state.descent+BOX_PAD_Y, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = task_x+BOX_WIDTH, .y = task_y-state.ascent-BOX_PAD_Y,  .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = task_x-BOX_PAD_X, .y = task_y-state.ascent-BOX_PAD_Y,  .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = task_x+mx,   .y = task_y+my, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = task_x+w-mx, .y = task_y+my, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = task_x+w-mx, .y = task_y+my, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = task_x+mx,   .y = task_y+my, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        // zig fmt: on
 
         state.index_buffer.append(index_base + 0) catch unreachable;
         state.index_buffer.append(index_base + 1) catch unreachable;
@@ -255,38 +283,56 @@ fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, tex
     }
 
     // Text
-    var x = task_x;
-    var y = task_y;
-    for (text) |char| {
-        var q: stb_tt.stbtt_aligned_quad = .{};
-        stb_tt.stbtt_GetPackedQuad(&state.char_info, BITMAP_SIZE, BITMAP_SIZE, char-FIRST_CHAR, &x, &y, &q, 1);//1=opengl & d3d10+,0=d3d9
+    {
+        // Starting position of the text
+        var x = task_x + BOX_MARGIN_X + BOX_PAD_X;
+        var y = task_y + BOX_MARGIN_Y + BOX_PAD_Y + state.ascent;
+        for (text) |char| {
+            var q: stb_tt.stbtt_aligned_quad = .{};
+            stb_tt.stbtt_GetPackedQuad(&state.char_info, BITMAP_SIZE, BITMAP_SIZE, char - FIRST_CHAR, &x, &y, &q, 1); //1=opengl & d3d10+,0=d3d9
 
-        // bottom-left
-        // bottom-right
-        // top-right
-        // top-left
-        const index_base: u16 = @intCast(state.vert_buffer.items.len);
-        state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = txt_colour, .u = q.s0, .v = q.t1 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = txt_colour, .u = q.s1, .v = q.t1 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = txt_colour, .u = q.s1, .v = q.t0 }) catch unreachable;
-        state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = txt_colour, .u = q.s0, .v = q.t0 }) catch unreachable;
+            // bottom-left
+            // bottom-right
+            // top-right
+            // top-left
+            const index_base: u16 = @intCast(state.vert_buffer.items.len);
+            state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = txt_colour, .u = q.s0, .v = q.t1 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = txt_colour, .u = q.s1, .v = q.t1 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = txt_colour, .u = q.s1, .v = q.t0 }) catch unreachable;
+            state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = txt_colour, .u = q.s0, .v = q.t0 }) catch unreachable;
 
-        state.index_buffer.append(index_base + 0) catch unreachable;
-        state.index_buffer.append(index_base + 1) catch unreachable;
-        state.index_buffer.append(index_base + 2) catch unreachable;
-        state.index_buffer.append(index_base + 0) catch unreachable;
-        state.index_buffer.append(index_base + 2) catch unreachable;
-        state.index_buffer.append(index_base + 3) catch unreachable;
+            // zig fmt: off
+            state.index_buffer.append(index_base + 0) catch unreachable;
+            state.index_buffer.append(index_base + 1) catch unreachable;
+            state.index_buffer.append(index_base + 2) catch unreachable;
+            state.index_buffer.append(index_base + 0) catch unreachable;
+            state.index_buffer.append(index_base + 2) catch unreachable;
+            state.index_buffer.append(index_base + 3) catch unreachable;
+            // zig fmt: on
+        }
     }
-    // zig fmt: on
+
+    // Adjust the backing image height now that we know how much text it needs to hold.
+    const font_height = state.ascent - state.descent; // TODO: Add multi-line support
+    const viz_box_height = font_height + (2 * BOX_PAD_Y);
+    {
+        // offset by top margin
+        const my = BOX_MARGIN_Y;
+        state.vert_buffer.items[bg_bottom_left_vert_idx].y = task_y + my + viz_box_height;
+        state.vert_buffer.items[bg_bottom_right_vert_idx].y = task_y + my + viz_box_height;
+    }
+
+    // Returns the position to start the next box.
+    // So all margins for this box should be included.
+    const box_height_with_margin = viz_box_height + (2 * BOX_MARGIN_Y);
+    return task_y + box_height_with_margin;
 }
 
 //--------------------------------------------------------------------------------------------------
 fn add_custom_column(x: f32, y: f32, heading_txt: []const u8, activation_range: ActivationRange) void {
     var cur_y = y;
-    add_task_verts(x, cur_y, HEADING_BG_COLOUR, HEADING_TXT_COLOUR, heading_txt);
+    cur_y = add_task_verts(x, cur_y, HEADING_BG_COLOUR, HEADING_TXT_COLOUR, heading_txt);
 
-    cur_y += BOX_HEIGHT(); // Next row
     for (state.tasks.items) |item| {
         const is_heading: bool = (item.depth == 0);
         if (is_heading) { // Skip headers
@@ -297,8 +343,7 @@ fn add_custom_column(x: f32, y: f32, heading_txt: []const u8, activation_range: 
             const box_col = BOX_COLOURS[state.bg_color_idx % BOX_COLOURS.len];
             state.bg_color_idx = (state.bg_color_idx + 1 % BOX_COLOURS.len);
 
-            add_task_verts(x, cur_y, box_col, TXT_COLOUR, item.title);
-            cur_y += BOX_HEIGHT(); // Next row
+            cur_y = add_task_verts(x, cur_y, box_col, TXT_COLOUR, item.title);
         }
     }
 }
@@ -311,8 +356,8 @@ fn update_buffers() void {
     state.vert_buffer.clearRetainingCapacity();
     state.index_buffer.clearRetainingCapacity();
 
-    const INIT_X: f32 = BOX_PAD_X;
-    const INIT_Y: f32 = BOX_HEIGHT() - state.ascent; // TODO: Adjust anchor so that position(0,0) is visible?
+    const INIT_X: f32 = BOX_MARGIN_X; // Adds a double margin on the left-side for balance.
+    const INIT_Y: f32 = -BOX_MARGIN_Y; // Remove inital margin at the top;
 
     var task_x: f32 = INIT_X;
     var task_y: f32 = INIT_Y;
@@ -353,9 +398,7 @@ fn update_buffers() void {
             state.bg_color_idx = (state.bg_color_idx + 1 % BOX_COLOURS.len);
         }
 
-        add_task_verts(task_x, task_y, box_col, text_col, item.title);
-        task_y += BOX_HEIGHT(); // Next row
-        //
+        task_y = add_task_verts(task_x, task_y, box_col, text_col, item.title);
     } // for (state.tasks)
 
     sg.updateBuffer(state.bind.vertex_buffers[0], sg.asRange(state.vert_buffer.items));
