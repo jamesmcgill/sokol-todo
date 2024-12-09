@@ -1,8 +1,7 @@
 //--------------------------------------------------------------------------------------------------
 // TODO for MVP
-// 1) Word wrapping
-// 2) Column collapsing (with mouse click)
-// 3) Total task count in heading
+// 1) Column collapsing (with mouse click)
+// 2) Total task count in heading
 //
 // EDITING (excluding custom columns for now)
 // Keyboard Task Selection (vim style navigation)
@@ -76,6 +75,7 @@ const state = struct {
     var ascent: f32 = 0;
     var descent: f32 = 0;
     var line_gap: f32 = 0;
+    var font_height: f32 = 0;
 
     var bg_color_idx: usize = 0;
 };
@@ -196,6 +196,7 @@ export fn init() void {
         stb_tt.stbtt_PackEnd(&context);
 
         stb_tt.stbtt_GetScaledFontVMetrics(&ttf_buffer, 0, FONT_SIZE, &state.ascent, &state.descent, &state.line_gap);
+        state.font_height = state.ascent - state.descent;
 
         std.debug.print("Ascent:{d}, Descent:{d}, Line-Gap:{d}\n", .{ state.ascent, state.descent, state.line_gap });
         // To avoid having 2 pipelines we need to re-use the same shader.
@@ -287,6 +288,84 @@ fn add_text_verts(txt_x: f32, txt_y: f32, colour: u32, text: []const u8) void {
 }
 
 //--------------------------------------------------------------------------------------------------
+fn add_vertical_text_verts(txt_x: f32, txt_y: f32, colour: u32, text: []const u8) void {
+    var x = txt_x;
+    var y = txt_y;
+    for (text) |char| {
+        var horiz_q: stb_tt.stbtt_aligned_quad = .{};
+        stb_tt.stbtt_GetPackedQuad(&state.char_info, BITMAP_SIZE, BITMAP_SIZE, char - FIRST_CHAR, &x, &y, &horiz_q, 1); //1=opengl & d3d10+,0=d3d9
+        // To rotate vertically, simply get the position relative from the start position (delta)
+        // and add it to the other axis start position instead.
+        const q: stb_tt.stbtt_aligned_quad = .{
+            .x0 = txt_x - (horiz_q.y1 - txt_y),
+            .x1 = txt_x - (horiz_q.y0 - txt_y),
+            .y0 = txt_y + (horiz_q.x0 - txt_x),
+            .y1 = txt_y + (horiz_q.x1 - txt_x),
+            .s0 = horiz_q.s0,
+            .s1 = horiz_q.s1,
+            .t0 = horiz_q.t0,
+            .t1 = horiz_q.t1,
+        };
+
+        // ROTATED so now from screen-space:
+        // top-left
+        // bottom-left
+        // bottom-right
+        // top-right
+        const index_base: u16 = @intCast(state.vert_buffer.items.len);
+        state.vert_buffer.append(.{ .x = q.x0, .y = q.y0, .z = 0.0, .color = colour, .u = q.s0, .v = q.t1 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x0, .y = q.y1, .z = 0.0, .color = colour, .u = q.s1, .v = q.t1 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x1, .y = q.y1, .z = 0.0, .color = colour, .u = q.s1, .v = q.t0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = q.x1, .y = q.y0, .z = 0.0, .color = colour, .u = q.s0, .v = q.t0 }) catch unreachable;
+
+        // zig fmt: off
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 1) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 3) catch unreachable;
+        // zig fmt: on
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// task_x and task_y are the top-left coords of the task box
+//--------------------------------------------------------------------------------------------------
+fn add_collapsed_column_verts(col_x: f32, col_y: f32, width: f32, text: []const u8) void {
+
+    // Background box. Header only; the rest of the column uses the clear colour as background.
+    {
+        // zig fmt: off
+        const x = col_x + BOX_MARGIN_X;
+        const y = col_y + BOX_MARGIN_Y;
+        const w = width - (2*BOX_MARGIN_X);
+        const h = state.font_height + (BOX_PAD_Y * 2); // This should match the height of the other headers
+        const bg_colour = HEADING_BG_COLOUR;
+                                                                      //
+        const index_base: u16 = @intCast(state.vert_buffer.items.len);
+        state.vert_buffer.append(.{ .x = x,   .y = y+h, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = x+w, .y = y+h, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = x+w, .y = y,   .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        state.vert_buffer.append(.{ .x = x,   .y = y,   .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
+        // zig fmt: on
+
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 1) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 0) catch unreachable;
+        state.index_buffer.append(index_base + 2) catch unreachable;
+        state.index_buffer.append(index_base + 3) catch unreachable;
+    }
+
+    // Text
+    const text_x = col_x + BOX_MARGIN_X + BOX_PAD_X;
+    const after_heading_y = state.font_height + (BOX_PAD_Y * 2) + (BOX_MARGIN_Y * 2); // This should match the height of the other headers
+    const text_y = after_heading_y + BOX_PAD_X; // NOTE: deliberately using a different pad size here
+    add_vertical_text_verts(text_x, text_y, HEADING_TXT_COLOUR, text);
+}
+
+//--------------------------------------------------------------------------------------------------
 // task_x and task_y are the top-left coords of the task box
 //--------------------------------------------------------------------------------------------------
 fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, text: []const u8) f32 {
@@ -316,8 +395,6 @@ fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, tex
     }
 
     // Text
-    const font_height = (state.ascent - state.descent);
-
     // For multi-line text we use a different padding size
     // Initially though, we much assume the normal padding.
     const pad_y_diff = BOX_PAD_Y - BOX_PAD_Y_SM;
@@ -351,7 +428,7 @@ fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, tex
                 // Add the text up to and including the last space
                 add_text_verts(text_x, y, txt_colour, text[from_range_idx .. to_range_idx + 1]);
                 x = text_x;
-                y += font_height + state.line_gap;
+                y += state.font_height + state.line_gap;
                 from_range_idx = to_range_idx + 1;
                 num_lines += 1;
             }
@@ -360,8 +437,8 @@ fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, tex
         add_text_verts(text_x, y, txt_colour, text[from_range_idx..text.len]);
     }
 
-    // Adjust the backing image height now that we know how much text it needs to hold.
-    const text_height = (font_height * num_lines) + (state.line_gap * (num_lines - 1));
+    // Adjust the background box height now that we know how much text it needs to hold.
+    const text_height = (state.font_height * num_lines) + (state.line_gap * (num_lines - 1));
     const viz_box_height = text_height + (2 * pad_y);
     {
         // offset by top margin
@@ -431,13 +508,35 @@ fn update_buffers() void {
     task_x += COLUMN_WIDTH;
 
     // All the tasks (even dailies) are shown in their columns
+    var skip_til_next_column = false;
     for (state.tasks.items, 0..) |item, i| {
         const is_heading: bool = (item.depth == 0);
+
+        if (skip_til_next_column) {
+            if (is_heading) {
+                skip_til_next_column = false;
+            } else {
+                continue;
+            }
+        }
 
         // Start new column
         if (is_heading and i != 0) {
             task_x += COLUMN_WIDTH;
             task_y = INIT_Y; // Start from top
+        }
+
+        // TODO: read this from file
+        const IS_COLLAPSED = is_heading and i == 0;
+        if (IS_COLLAPSED) {
+            // TODO: Draw a vertical box
+            add_collapsed_column_verts(task_x, task_y, 50, item.title);
+            skip_til_next_column = true;
+
+            // Adjust for text next heading by removing the standard width and replacing with the collapsed size
+            task_x -= COLUMN_WIDTH;
+            task_x += 50;
+            continue;
         }
 
         const text_col: u32 = if (is_heading) HEADING_TXT_COLOUR else TXT_COLOUR;
