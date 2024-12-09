@@ -1,3 +1,13 @@
+-Today
+  #GENERATED_DAY
+  #COLLAPSED
+-This Week
+  #GENERATED_WEEK
+-This Month
+  #GENERATED_MONTH
+  #COLLAPSED
+-This Year
+  #GENERATED_YEAR
 -Programming // This task is actually a root-heading
   -Graphics // This task is actually just a sub-heading
     #DESC: Finish off all the books and courses
@@ -23,6 +33,7 @@
   -Revise German
 
 -Health & Fitness
+  #COLLAPSED
   -Take Vitamins
     #ACTIVATE_DATE:2024-12-04 // This will be the next time to show. If today is the 3rd then that means we achieved it today.
     #DAILY

@@ -3,7 +3,7 @@
 // 1) Column collapsing (with mouse click)
 // 2) Total task count in heading
 //
-// EDITING (excluding custom columns for now)
+// EDITING (excluding generated columns for now)
 // Keyboard Task Selection (vim style navigation)
 // Insert task (below/above) (o / O keys like vim)
 // Edit task text (i)
@@ -46,6 +46,7 @@ const FONT_SIZE = 30.0;
 const MAX_LETTERS = 10000; // maximum characters that can be displayed at one time (vert buffer).
 
 const COLUMN_WIDTH: f32 = 400;
+const COLLAPSED_COLUMN_WIDTH: f32 = 50;
 const BOX_PAD_X: f32 = 12;
 const BOX_PAD_Y: f32 = 20;
 const BOX_PAD_Y_SM: f32 = 10;
@@ -332,14 +333,14 @@ fn add_vertical_text_verts(txt_x: f32, txt_y: f32, colour: u32, text: []const u8
 //--------------------------------------------------------------------------------------------------
 // task_x and task_y are the top-left coords of the task box
 //--------------------------------------------------------------------------------------------------
-fn add_collapsed_column_verts(col_x: f32, col_y: f32, width: f32, text: []const u8) void {
+fn add_collapsed_column_verts(col_x: f32, col_y: f32, text: []const u8) void {
 
     // Background box. Header only; the rest of the column uses the clear colour as background.
     {
         // zig fmt: off
         const x = col_x + BOX_MARGIN_X;
         const y = col_y + BOX_MARGIN_Y;
-        const w = width - (2*BOX_MARGIN_X);
+        const w = COLLAPSED_COLUMN_WIDTH - (2*BOX_MARGIN_X);
         const h = state.font_height + (BOX_PAD_Y * 2); // This should match the height of the other headers
         const bg_colour = HEADING_BG_COLOUR;
                                                                       //
@@ -454,7 +455,7 @@ fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, tex
 }
 
 //--------------------------------------------------------------------------------------------------
-fn add_custom_column(x: f32, y: f32, heading_txt: []const u8, activation_range: ActivationRange) void {
+fn add_generated_column(x: f32, y: f32, heading_txt: []const u8, activation_range: ActivationRange) void {
     var cur_y = y;
     cur_y = add_task_verts(x, cur_y, HEADING_BG_COLOUR, HEADING_TXT_COLOUR, heading_txt);
 
@@ -487,26 +488,6 @@ fn update_buffers() void {
     var task_x: f32 = INIT_X;
     var task_y: f32 = INIT_Y;
 
-    // Recurring and upcoming task (e.g. Daily) columns
-    // Rather than gather this data into new read-only lists, we can simply do repeated passes.
-    // TODO: we need to work out how to edit the orginal data from these visual only copies.
-
-    // TODAY column
-    add_custom_column(task_x, INIT_Y, "Today", ActivationRange.day);
-    task_x += COLUMN_WIDTH;
-
-    // THIS WEEK column
-    add_custom_column(task_x, INIT_Y, "This Week", ActivationRange.week);
-    task_x += COLUMN_WIDTH;
-
-    // THIS MONTH column
-    add_custom_column(task_x, INIT_Y, "This Month", ActivationRange.month);
-    task_x += COLUMN_WIDTH;
-
-    // THIS YEAR column
-    add_custom_column(task_x, INIT_Y, "This Year", ActivationRange.year);
-    task_x += COLUMN_WIDTH;
-
     // All the tasks (even dailies) are shown in their columns
     var skip_til_next_column = false;
     for (state.tasks.items, 0..) |item, i| {
@@ -526,16 +507,21 @@ fn update_buffers() void {
             task_y = INIT_Y; // Start from top
         }
 
-        // TODO: read this from file
-        const IS_COLLAPSED = is_heading and i == 0;
-        if (IS_COLLAPSED) {
-            // TODO: Draw a vertical box
-            add_collapsed_column_verts(task_x, task_y, 50, item.title);
+        if (item.is_collapsed) {
+            add_collapsed_column_verts(task_x, task_y, item.title);
             skip_til_next_column = true;
 
             // Adjust for text next heading by removing the standard width and replacing with the collapsed size
             task_x -= COLUMN_WIDTH;
-            task_x += 50;
+            task_x += COLLAPSED_COLUMN_WIDTH;
+            continue;
+        }
+
+        // Recurring and upcoming task (e.g. Daily) columns
+        // Rather than gather this data into new read-only lists, we can simply do repeated passes.
+        // TODO: we need to work out how to edit the orginal data from these visual only copies.
+        if (item.is_generated_list) {
+            add_generated_column(task_x, INIT_Y, item.title, item.active_range);
             continue;
         }
 
@@ -607,6 +593,8 @@ const Task = struct {
     active_day_of_month: u5 = 0,
 
     enabled: bool = true,
+    is_generated_list: bool = false,
+    is_collapsed: bool = false,
 
     streak_current: u32 = 0,
     streak_best: u32 = 0,
@@ -676,21 +664,34 @@ fn add_meta_data(task: *Task, line: []const u8, allocator: Allocator) void {
         const desc_string = allocator.dupe(u8, rest_of_line) catch return; // TODO: ignoring error
         task.description = desc_string;
 
-        //TODO: do we want multi-line text?
-    } else if (has_meta_data("DAILY", line)) { //
         // Standalone Flags
+    } else if (has_meta_data("COLLAPSED", line)) {
+        task.is_collapsed = true;
+    } else if (has_meta_data("GENERATED_DAY", line)) {
+        task.is_generated_list = true;
+        task.active_range = ActivationRange.day;
+    } else if (has_meta_data("GENERATED_WEEK", line)) {
+        task.is_generated_list = true;
+        task.active_range = ActivationRange.week;
+    } else if (has_meta_data("GENERATED_MONTH", line)) {
+        task.is_generated_list = true;
+        task.active_range = ActivationRange.month;
+    } else if (has_meta_data("GENERATED_YEAR", line)) {
+        task.is_generated_list = true;
+        task.active_range = ActivationRange.year;
+    } else if (has_meta_data("DAILY", line)) {
         task.recur = Recurrence.daily;
-    } else if (has_meta_data("WEEKLY", line)) { //
+    } else if (has_meta_data("WEEKLY", line)) {
         task.recur = Recurrence.weekly;
-    } else if (has_meta_data("MONTHLY", line)) { //
+    } else if (has_meta_data("MONTHLY", line)) {
         task.recur = Recurrence.monthly;
-    } else if (has_meta_data("YEARLY", line)) { //
+    } else if (has_meta_data("YEARLY", line)) {
         task.recur = Recurrence.yearly;
-    } else if (has_meta_data("TWO_WEEKLY", line)) { //
+    } else if (has_meta_data("TWO_WEEKLY", line)) {
         task.recur = Recurrence.two_weekly;
-    } else if (has_meta_data("FOUR_WEEKLY", line)) { //
+    } else if (has_meta_data("FOUR_WEEKLY", line)) {
         task.recur = Recurrence.four_weekly;
-    } else if (has_meta_data("DISABLED", line)) { //
+    } else if (has_meta_data("DISABLED", line)) {
         task.enabled = false;
     }
 }
