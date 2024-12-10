@@ -492,6 +492,9 @@ fn add_generated_column(x: f32, y: f32, heading_task: *Task) void {
 // As these buffers are DYNAMIC and not STREAM, they should not be updated every single frame
 //--------------------------------------------------------------------------------------------------
 fn update_buffers() void {
+    for (state.tasks.items) |*task| {
+        task.*.visuals.clearRetainingCapacity();
+    }
     state.vert_buffer.clearRetainingCapacity();
     state.index_buffer.clearRetainingCapacity();
 
@@ -579,13 +582,17 @@ export fn event(ev: [*c]const sapp.Event) void {
         std.debug.print("Mouse button. Event Type: {}. Pos:{d},{d} \n", .{ e.type, e.mouse_x, e.mouse_y });
         if (task_at_coords(e.mouse_x, e.mouse_y)) |task| {
             std.debug.print("Clicked on task: {s}\n", .{task.title});
+            if (task.depth == 0) {
+                task.is_collapsed = !task.is_collapsed;
+                update_buffers();
+            }
         }
     }
 }
 
 //--------------------------------------------------------------------------------------------------
-fn task_at_coords(x: f32, y: f32) ?Task {
-    for (state.tasks.items) |task| {
+fn task_at_coords(x: f32, y: f32) ?*Task {
+    for (state.tasks.items) |*task| {
         for (task.visuals.items) |rect| {
             if (rect.x0 <= x and x <= rect.x1 and rect.y0 <= y and y <= rect.y1) {
                 return task;
