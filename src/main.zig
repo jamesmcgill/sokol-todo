@@ -333,7 +333,7 @@ fn add_vertical_text_verts(txt_x: f32, txt_y: f32, colour: u32, text: []const u8
 //--------------------------------------------------------------------------------------------------
 // task_x and task_y are the top-left coords of the task box
 //--------------------------------------------------------------------------------------------------
-fn add_collapsed_column_verts(col_x: f32, col_y: f32, text: []const u8) void {
+fn add_collapsed_column_verts(col_x: f32, col_y: f32, task: *Task) void {
 
     // Background box. Header only; the rest of the column uses the clear colour as background.
     {
@@ -343,6 +343,14 @@ fn add_collapsed_column_verts(col_x: f32, col_y: f32, text: []const u8) void {
         const w = COLLAPSED_COLUMN_WIDTH - (2*BOX_MARGIN_X);
         const h = state.font_height + (BOX_PAD_Y * 2); // This should match the height of the other headers
         const bg_colour = HEADING_BG_COLOUR;
+
+        // TODO: These will need cleared before redrawing otherwise you will continually add more
+        task.visuals.append(.{
+            .x0 = x,
+            .x1 = x+w,
+            .y0 = y,
+            .y1 = y+h,
+        }) catch unreachable;
                                                                       //
         const index_base: u16 = @intCast(state.vert_buffer.items.len);
         state.vert_buffer.append(.{ .x = x,   .y = y+h, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
@@ -363,13 +371,13 @@ fn add_collapsed_column_verts(col_x: f32, col_y: f32, text: []const u8) void {
     const text_x = col_x + BOX_MARGIN_X + BOX_PAD_X;
     const after_heading_y = state.font_height + (BOX_PAD_Y * 2) + (BOX_MARGIN_Y * 2); // This should match the height of the other headers
     const text_y = after_heading_y + BOX_PAD_X; // NOTE: deliberately using a different pad size here
-    add_vertical_text_verts(text_x, text_y, HEADING_TXT_COLOUR, text);
+    add_vertical_text_verts(text_x, text_y, HEADING_TXT_COLOUR, task.*.title);
 }
 
 //--------------------------------------------------------------------------------------------------
 // task_x and task_y are the top-left coords of the task box
 //--------------------------------------------------------------------------------------------------
-fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, text: []const u8) f32 {
+fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, task: *Task) f32 {
     // Background box
     // Keep track of bottom points on the bax as we will need to set the y-pos properly later
     // once we know the proper size of the box.
@@ -381,6 +389,13 @@ fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, tex
         const mx = BOX_MARGIN_X;
         const my = BOX_MARGIN_Y;
         const index_base: u16 = @intCast(state.vert_buffer.items.len);
+        task.*.visuals.append(.{
+            .x0 = task_x + mx,
+            .x1 = task_x + w - mx,
+            .y0 = task_y + my,
+            .y1 = task_y + my + 5, // Dummy value for now as we don't know the text height
+        }) catch unreachable;
+
         state.vert_buffer.append(.{ .x = task_x+mx,   .y = task_y+my, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
         state.vert_buffer.append(.{ .x = task_x+w-mx, .y = task_y+my, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
         state.vert_buffer.append(.{ .x = task_x+w-mx, .y = task_y+my, .z = 0.0, .color = bg_colour, .u = 1.0, .v = 1.0 }) catch unreachable;
@@ -413,7 +428,7 @@ fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, tex
         var y = text_y;
         var from_range_idx: usize = 0;
         var to_range_idx: usize = 0;
-        for (text, 0..) |char, i| {
+        for (task.title, 0..) |char, i| {
             if (char == ' ') { // store last space character position
                 to_range_idx = i; // NOTE: it's fine if it was the space that went  over the limit.
             }
@@ -427,7 +442,7 @@ fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, tex
                 }
 
                 // Add the text up to and including the last space
-                add_text_verts(text_x, y, txt_colour, text[from_range_idx .. to_range_idx + 1]);
+                add_text_verts(text_x, y, txt_colour, task.title[from_range_idx .. to_range_idx + 1]);
                 x = text_x;
                 y += state.font_height + state.line_gap;
                 from_range_idx = to_range_idx + 1;
@@ -435,41 +450,39 @@ fn add_task_verts(task_x: f32, task_y: f32, bg_colour: u32, txt_colour: u32, tex
             }
         }
         // Remaining text
-        add_text_verts(text_x, y, txt_colour, text[from_range_idx..text.len]);
+        add_text_verts(text_x, y, txt_colour, task.title[from_range_idx..task.title.len]);
     }
 
     // Adjust the background box height now that we know how much text it needs to hold.
     const text_height = (state.font_height * num_lines) + (state.line_gap * (num_lines - 1));
     const viz_box_height = text_height + (2 * pad_y);
-    {
-        // offset by top margin
-        const my = BOX_MARGIN_Y;
-        state.vert_buffer.items[bg_bottom_left_vert_idx].y = task_y + my + viz_box_height;
-        state.vert_buffer.items[bg_bottom_right_vert_idx].y = task_y + my + viz_box_height;
-    }
+    const y1 = task_y + BOX_MARGIN_Y + viz_box_height;
+    task.*.visuals.items[task.*.visuals.items.len - 1].y1 = y1;
+
+    state.vert_buffer.items[bg_bottom_left_vert_idx].y = y1;
+    state.vert_buffer.items[bg_bottom_right_vert_idx].y = y1;
 
     // Returns the position to start the next box.
     // So all margins for this box should be included.
-    const box_height_with_margin = viz_box_height + (2 * BOX_MARGIN_Y);
-    return task_y + box_height_with_margin;
+    return y1 + BOX_MARGIN_Y;
 }
 
 //--------------------------------------------------------------------------------------------------
-fn add_generated_column(x: f32, y: f32, heading_txt: []const u8, activation_range: ActivationRange) void {
+fn add_generated_column(x: f32, y: f32, heading_task: *Task) void {
     var cur_y = y;
-    cur_y = add_task_verts(x, cur_y, HEADING_BG_COLOUR, HEADING_TXT_COLOUR, heading_txt);
+    cur_y = add_task_verts(x, cur_y, HEADING_BG_COLOUR, HEADING_TXT_COLOUR, heading_task);
 
-    for (state.tasks.items) |item| {
+    for (state.tasks.items) |*item| {
         const is_heading: bool = (item.depth == 0);
         if (is_heading) { // Skip headers
             continue;
         }
 
-        if (is_active_for_range(item, activation_range)) {
+        if (is_active_for_range(item.*, heading_task.*.active_range)) {
             const box_col = BOX_COLOURS[state.bg_color_idx % BOX_COLOURS.len];
             state.bg_color_idx = (state.bg_color_idx + 1 % BOX_COLOURS.len);
 
-            cur_y = add_task_verts(x, cur_y, box_col, TXT_COLOUR, item.title);
+            cur_y = add_task_verts(x, cur_y, box_col, TXT_COLOUR, item);
         }
     }
 }
@@ -490,7 +503,7 @@ fn update_buffers() void {
 
     // All the tasks (even dailies) are shown in their columns
     var skip_til_next_column = false;
-    for (state.tasks.items, 0..) |item, i| {
+    for (state.tasks.items, 0..) |*item, i| {
         const is_heading: bool = (item.depth == 0);
 
         if (skip_til_next_column) {
@@ -508,7 +521,7 @@ fn update_buffers() void {
         }
 
         if (item.is_collapsed) {
-            add_collapsed_column_verts(task_x, task_y, item.title);
+            add_collapsed_column_verts(task_x, task_y, item);
             skip_til_next_column = true;
 
             // Adjust for text next heading by removing the standard width and replacing with the collapsed size
@@ -521,7 +534,7 @@ fn update_buffers() void {
         // Rather than gather this data into new read-only lists, we can simply do repeated passes.
         // TODO: we need to work out how to edit the orginal data from these visual only copies.
         if (item.is_generated_list) {
-            add_generated_column(task_x, INIT_Y, item.title, item.active_range);
+            add_generated_column(task_x, INIT_Y, item);
             continue;
         }
 
@@ -531,7 +544,7 @@ fn update_buffers() void {
             state.bg_color_idx = (state.bg_color_idx + 1 % BOX_COLOURS.len);
         }
 
-        task_y = add_task_verts(task_x, task_y, box_col, text_col, item.title);
+        task_y = add_task_verts(task_x, task_y, box_col, text_col, item);
     } // for (state.tasks)
 
     sg.updateBuffer(state.bind.vertex_buffers[0], sg.asRange(state.vert_buffer.items));
@@ -560,7 +573,26 @@ export fn cleanup() void {
 
 //--------------------------------------------------------------------------------------------------
 export fn event(ev: [*c]const sapp.Event) void {
-    _ = ev;
+    const e = ev.*;
+    if (e.mouse_button == .LEFT and e.type == .MOUSE_UP) {
+        // Mouse Coords are window relative already
+        std.debug.print("Mouse button. Event Type: {}. Pos:{d},{d} \n", .{ e.type, e.mouse_x, e.mouse_y });
+        if (task_at_coords(e.mouse_x, e.mouse_y)) |task| {
+            std.debug.print("Clicked on task: {s}\n", .{task.title});
+        }
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+fn task_at_coords(x: f32, y: f32) ?Task {
+    for (state.tasks.items) |task| {
+        for (task.visuals.items) |rect| {
+            if (rect.x0 <= x and x <= rect.x1 and rect.y0 <= y and y <= rect.y1) {
+                return task;
+            }
+        }
+    }
+    return null;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -580,6 +612,13 @@ const ActivationRange = enum {
     week,
     month,
     year,
+};
+
+const Rect = struct {
+    x0: f32 = 0,
+    x1: f32 = 0,
+    y0: f32 = 0,
+    y1: f32 = 0,
 };
 
 const Task = struct {
@@ -604,6 +643,7 @@ const Task = struct {
     depth: usize, // Used for determining parent/child heirarchical depth
     parent: ?usize,
     children: std.ArrayList(usize),
+    visuals: std.ArrayList(Rect),
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -793,6 +833,7 @@ pub fn main() !void {
                         .depth = indent,
                         .parent = current_parent,
                         .children = std.ArrayList(usize).init(allocator),
+                        .visuals = std.ArrayList(Rect).init(allocator),
                     });
                     // Let the parent know they have just given birth
                     if (current_parent) |parent_idx| {
@@ -868,6 +909,7 @@ pub fn main() !void {
     // Cleanup allocations
     for (state.tasks.items) |item| {
         item.children.deinit();
+        item.visuals.deinit();
     }
     // TODO: move to state cleanup
     defer state.tasks.deinit();
