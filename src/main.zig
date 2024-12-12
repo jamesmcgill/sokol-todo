@@ -1,7 +1,5 @@
 //--------------------------------------------------------------------------------------------------
 // TODO for MVP
-// 1) Column collapsing (with mouse click)
-// 2) Total task count in heading
 //
 // EDITING (excluding generated columns for now)
 // Keyboard Task Selection (vim style navigation)
@@ -334,17 +332,16 @@ fn add_vertical_text_verts(txt_x: f32, txt_y: f32, colour: u32, text: []const u8
 // task_x and task_y are the top-left coords of the task box
 //--------------------------------------------------------------------------------------------------
 fn add_collapsed_column_verts(col_x: f32, col_y: f32, task: *Task) void {
+    const x = col_x + BOX_MARGIN_X;
+    const w = COLLAPSED_COLUMN_WIDTH - (2 * BOX_MARGIN_X);
 
     // Background box. Header only; the rest of the column uses the clear colour as background.
     {
         // zig fmt: off
-        const x = col_x + BOX_MARGIN_X;
         const y = col_y + BOX_MARGIN_Y;
-        const w = COLLAPSED_COLUMN_WIDTH - (2*BOX_MARGIN_X);
         const h = state.font_height + (BOX_PAD_Y * 2); // This should match the height of the other headers
         const bg_colour = HEADING_BG_COLOUR;
 
-        // TODO: These will need cleared before redrawing otherwise you will continually add more
         task.visuals.append(.{
             .x0 = x,
             .x1 = x+w,
@@ -367,9 +364,24 @@ fn add_collapsed_column_verts(col_x: f32, col_y: f32, task: *Task) void {
         state.index_buffer.append(index_base + 3) catch unreachable;
     }
 
+    const text_x = x + BOX_PAD_X;
+    const heading_y = col_y + BOX_MARGIN_Y + BOX_PAD_Y + state.ascent;
+
+    // Task count in header
+    var child_count: [3]u8 = undefined;
+    _ = std.fmt.bufPrint(child_count[0..], "{}", .{task_child_count(task.*, state.tasks)}) catch void;
+    add_text_verts(text_x, heading_y, HEADING_TXT_COLOUR, child_count[0..]);
+
+    // Add another invisible box behind the main column text
+    const after_heading_y = col_y + state.font_height + (BOX_PAD_Y * 2) + (BOX_MARGIN_Y * 2); // This should match the height of the other headers
+    task.visuals.append(.{
+        .x0 = x,
+        .x1 = x + w,
+        .y0 = after_heading_y,
+        .y1 = sapp.heightf(),
+    }) catch unreachable;
+
     // Text
-    const text_x = col_x + BOX_MARGIN_X + BOX_PAD_X;
-    const after_heading_y = state.font_height + (BOX_PAD_Y * 2) + (BOX_MARGIN_Y * 2); // This should match the height of the other headers
     const text_y = after_heading_y + BOX_PAD_X; // NOTE: deliberately using a different pad size here
     add_vertical_text_verts(text_x, text_y, HEADING_TXT_COLOUR, task.*.title);
 }
@@ -488,6 +500,22 @@ fn add_generated_column(x: f32, y: f32, heading_task: *Task) void {
 }
 
 //--------------------------------------------------------------------------------------------------
+fn tasks_with_active_range_count(active_range: ActivationRange) usize {
+    var count: usize = 0;
+    for (state.tasks.items) |item| { // Check all tasks
+        const is_heading: bool = (item.depth == 0); // Except headings
+        if (is_heading) {
+            continue;
+        }
+
+        if (is_active_for_range(item, active_range)) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+//--------------------------------------------------------------------------------------------------
 // NOTE: update buffer only when data changes.
 // As these buffers are DYNAMIC and not STREAM, they should not be updated every single frame
 //--------------------------------------------------------------------------------------------------
@@ -511,7 +539,7 @@ fn update_buffers() void {
 
         if (skip_til_next_column) {
             if (is_heading) {
-                skip_til_next_column = false;
+                skip_til_next_column = false; // Next column found. Stop skipping now.
             } else {
                 continue;
             }
@@ -600,6 +628,21 @@ fn task_at_coords(x: f32, y: f32) ?*Task {
         }
     }
     return null;
+}
+
+//--------------------------------------------------------------------------------------------------
+fn task_child_count(task: Task, task_list: ArrayList(Task)) usize {
+    var count: usize = task.children.items.len;
+
+    // Check for special generated/aggregate columns
+    if (task.is_generated_list and task.depth == 0) {
+        count += tasks_with_active_range_count(task.active_range);
+    } else { // Normal tasks
+        for (task.children.items) |child_idx| {
+            count += task_child_count(task_list.items[child_idx], task_list);
+        }
+    }
+    return count;
 }
 
 //--------------------------------------------------------------------------------------------------
